@@ -20,6 +20,7 @@ A local proxy that sits between [Claude Code](https://claude.ai/code) and the An
 - [Project structure](#project-structure)
 - [Security properties](#security-properties)
 - [Development](#development)
+- [Operational features](#operational-features)
 - [Phase roadmap](#phase-roadmap)
 - [Theoretical background](#theoretical-background)
 
@@ -175,14 +176,19 @@ Encrypt(code, sessionKey):
   nonce    = random(16 bytes)
   cipher   = AES-256-CTR(index.bytes, key, nonce)
   tag      = HMAC-SHA-256(nonce ‖ cipher, macKey)
-  payload  = base64url(nonce ‖ tag ‖ cipher)   # 52 bytes total
+  payload  = base64url(version ‖ nonce ‖ tag ‖ cipher)   # 53 bytes (v1)
 
 Decrypt(payload, sessionKey):
-  parse nonce, tag, cipher from payload
-  assert HMAC-SHA-256(nonce ‖ cipher, macKey) == tag   # timing-safe compare
+  if payload[0] == 0x01:                                  # v1 versioned format
+    parse nonce, tag, cipher from payload[1:]
+  else:                                                   # legacy v0 (no version byte)
+    parse nonce, tag, cipher from payload
+  assert HMAC-SHA-256(nonce ‖ cipher, macKey) == tag      # timing-safe compare
   index = AES-256-CTR.decrypt(cipher, key, nonce)
-  return DTE.decode(index)                              # corpus snippet
+  return DTE.decode(index)                                # corpus snippet
 ```
+
+The version byte enables future algorithm rotation without breaking existing stored payloads.
 
 > **Architectural note:** The proxy sends FPE-obfuscated code (not AES ciphertext) to Claude so that Claude can read and improve it. The HE engine is used for (a) encrypting the identifier mapping for secure local storage, and (b) demonstrating/testing the honey encryption security property against brute-force.
 
@@ -218,7 +224,7 @@ export ANTHROPIC_BASE_URL="http://localhost:8080"
 # That's it — use Claude Code normally.
 ```
 
-The proxy logs every request as structured JSON to stdout:
+The proxy logs every request as structured JSON to stdout. Log verbosity is controlled by `LOG_LEVEL` (default `info`):
 
 ```json
 {"level":"info","msg":"Honey proxy starting","port":8080,"sessionId":"a3f1...","upstream":"https://api.anthropic.com"}
@@ -226,6 +232,10 @@ The proxy logs every request as structured JSON to stdout:
 {"level":"info","msg":"Obfuscated identifiers","requestId":"...","count":17}
 {"level":"info","msg":"Stream complete","requestId":"...","ms":1823}
 ```
+
+Press `Ctrl-C` to stop — the proxy shuts down gracefully, completing in-flight requests before exiting.
+
+Each request also appends an audit entry (metadata only — never real code or identifiers) to `~/.honey-proxy/audit.jsonl`.
 
 ---
 
@@ -239,7 +249,7 @@ All configuration is via environment variables.
 | `HONEY_PASSPHRASE` | **Yes** | — | Passphrase for session key derivation. Use a random string of ≥ 20 characters. |
 | `PROXY_PORT` | No | `8080` | TCP port the proxy listens on (`127.0.0.1` only). |
 | `ANTHROPIC_BASE_URL_UPSTREAM` | No | `https://api.anthropic.com` | Override the upstream endpoint (useful for testing against a stub). |
-| `LOG_LEVEL` | No | `info` | Verbosity: `debug`, `info`, `warn`, or `error`. |
+| `LOG_LEVEL` | No | `info` | Verbosity: `debug`, `info`, `warn`, or `error`. Messages below this threshold are suppressed. |
 
 ---
 
@@ -250,15 +260,17 @@ honey-encryption-proxy/
 ├── src/
 │   ├── proxy.ts              # Bun HTTP server — main entry point
 │   ├── config.ts             # Environment variable loader + validator
-│   ├── logger.ts             # Structured JSON logger
-│   ├── types.ts              # Result<T,E>, SessionKey, CodeBlock, IdentifierMapping
+│   ├── logger.ts             # Structured JSON logger with level filtering
+│   ├── types.ts              # Result<T,E>, SessionKey, CodeBlock, IdentifierMapping, AuditEntry
+│   ├── audit.ts              # JSONL audit trail writer (~/.honey-proxy/audit.jsonl)
+│   ├── stream-deobfuscator.ts # Chunk-boundary-safe SSE deobfuscation
 │   │
 │   ├── honey/
 │   │   ├── key-manager.ts    # PBKDF2(250k) + HKDF → three 32-byte sub-keys
 │   │   ├── fpe.ts            # Format-Preserving Encryption: identifiers, numbers,
 │   │   │                     #   string literals; 256-word vocabulary; collision avoidance
 │   │   ├── dte-corpus.ts     # Distribution-Transforming Encoder (corpus variant)
-│   │   └── engine.ts         # AES-256-CTR + HMAC Honey Encryption pipeline
+│   │   └── engine.ts         # AES-256-CTR + HMAC Honey Encryption pipeline (versioned wire format)
 │   │
 │   ├── ast/
 │   │   ├── extractor.ts      # Comment stripping; fenced code block extraction;
@@ -271,9 +283,12 @@ honey-encryption-proxy/
 │                             #   Rust, Go) used as Honey Encryption decoys
 │
 ├── tests/
-│   ├── honey.test.ts         # HE engine + key derivation (17 tests)
+│   ├── honey.test.ts         # HE engine + key derivation + versioned format (20 tests)
 │   ├── dte.test.ts           # DTE, FPE, extractor, mapper end-to-end (43 tests)
-│   └── proxy.test.ts         # Full pipeline integration (7 tests)
+│   ├── proxy.test.ts         # Full pipeline integration (7 tests)
+│   ├── logger.test.ts        # Log-level filtering (7 tests)
+│   ├── audit.test.ts         # JSONL audit writer (4 tests)
+│   └── stream-deobfuscator.test.ts  # SSE chunk-boundary handling (7 tests)
 │
 ├── package.json
 └── tsconfig.json
@@ -283,16 +298,18 @@ honey-encryption-proxy/
 
 | Module | Responsibility |
 |---|---|
-| `proxy.ts` | Bun HTTP server; intercepts `POST /v1/messages`; passes everything else transparently; handles streaming (SSE) |
+| `proxy.ts` | Bun HTTP server; intercepts `POST /v1/messages`; passes everything else transparently; handles streaming (SSE); graceful shutdown on SIGINT/SIGTERM |
 | `config.ts` | Loads and validates env vars; returns `Result<Config>` to force explicit error handling |
-| `logger.ts` | Writes structured JSON log entries; errors go to `stderr`, all others to `stdout` |
-| `types.ts` | All shared interfaces and the `Result<T,E>` monad for type-safe error propagation |
+| `logger.ts` | Structured JSON logger with level-based filtering (`setLogLevel`/`getLogLevel`); errors go to `stderr`, all others to `stdout` |
+| `types.ts` | All shared interfaces (`Result<T,E>`, `SessionKey`, `IdentifierMapping`, `AuditEntry`) for type-safe error propagation |
+| `audit.ts` | Fire-and-forget JSONL audit writer; appends metadata-only entries to `~/.honey-proxy/audit.jsonl` |
+| `stream-deobfuscator.ts` | Buffers SSE chunks on `\n\n` boundaries so identifiers split across TCP chunks are deobfuscated correctly |
 | `key-manager.ts` | Derives three independent 32-byte sub-keys from a passphrase; generates fresh salt per session |
 | `fpe.ts` | Identifier FPE (HMAC→vocabulary), numeric FPE (HMAC→scaled value), string-literal FPE (exact-match replacement), collision avoidance, reverse mapping |
 | `dte-corpus.ts` | Maps code strings to corpus indices via HMAC; maps corpus indices back to code |
-| `engine.ts` | Combines DTE + AES-CTR + HMAC-SHA256 into a complete Honey Encryption envelope |
+| `engine.ts` | Combines DTE + AES-CTR + HMAC-SHA256 into a versioned Honey Encryption envelope (v1 wire format with legacy v0 fallback) |
 | `extractor.ts` | Single-pass regex to strip comments (preserving strings), extract fenced code blocks, extract identifier tokens |
-| `mapper.ts` | Orchestrates the full obfuscation pipeline: strip → extract → map → transform |
+| `mapper.ts` | Orchestrates the full obfuscation pipeline: strip → extract → map → transform; returns `ObfuscationStats` for audit |
 | `corpus/data.ts` | 60 real-world OSS snippets across TypeScript, Python, Rust, Go used as plausible HE decoys |
 
 ---
@@ -314,6 +331,9 @@ honey-encryption-proxy/
 | Session key material | Forward secrecy: fresh random salt per proxy start |
 | Key separation | Three independent sub-keys (fpe, aes, hmac) via HKDF |
 | Identifier mapping under brute force | Honey property: every wrong passphrase yields a different-but-plausible mapping |
+| Streaming chunk boundaries | `StreamDeobfuscator` buffers on SSE `\n\n` delimiters so split identifiers never leak to the client |
+| Audit trail | JSONL log at `~/.honey-proxy/audit.jsonl` records only counts and metadata — never real or fake names |
+| Wire format evolution | Version byte in HE payloads enables algorithm rotation without breaking stored data |
 
 ### What is not protected
 
@@ -333,7 +353,7 @@ honey-encryption-proxy/
 ## Development
 
 ```bash
-# Run the full test suite (67 tests)
+# Run the full test suite (87 tests across 6 files)
 bun test
 
 # Type-check (zero errors expected; TypeScript strict mode)
@@ -346,9 +366,12 @@ bun run ci
 ### Running individual test files
 
 ```bash
-bun test tests/honey.test.ts    # HE engine: encrypt/decrypt, key derivation, honey property
-bun test tests/dte.test.ts      # DTE, FPE, comment stripping, numeric mapping, string literals
-bun test tests/proxy.test.ts    # End-to-end: multi-turn, comment stripping, numeric round-trip
+bun test tests/honey.test.ts                # HE engine: encrypt/decrypt, key derivation, honey property, versioned format
+bun test tests/dte.test.ts                  # DTE, FPE, comment stripping, numeric mapping, string literals
+bun test tests/proxy.test.ts                # End-to-end: multi-turn, comment stripping, numeric round-trip
+bun test tests/logger.test.ts               # Log-level filtering
+bun test tests/audit.test.ts                # JSONL audit writer
+bun test tests/stream-deobfuscator.test.ts  # SSE chunk-boundary deobfuscation
 ```
 
 ### Manual end-to-end inspection
@@ -400,6 +423,47 @@ Open `src/corpus/data.ts` and append a new entry to the `CORPUS` array:
 ```
 
 Escape any `${expr}` as `\${expr}` and any nested backticks as `` \` `` since entries are template literals.
+
+---
+
+## Operational features
+
+These features harden the proxy for daily use beyond demo scenarios.
+
+### Log-level filtering
+
+`LOG_LEVEL` controls which messages reach stdout/stderr. Set to `error` for quiet production use, `debug` for troubleshooting. The priority order is `debug < info < warn < error` — any message below the configured threshold is suppressed.
+
+### Graceful shutdown
+
+`SIGINT` (Ctrl-C) and `SIGTERM` trigger a clean shutdown: the proxy calls `server.stop()`, logs the event, and exits with code 0. No requests are dropped mid-stream.
+
+### Versioned HE wire format
+
+The Honey Encryption engine now prepends a version byte (`0x01`) to every encrypted payload. The decrypt path auto-detects the version: v1 payloads use the new layout (`[version:1][nonce:16][tag:32][ciphertext]`), while legacy v0 payloads (no version byte) are handled transparently. This enables future algorithm rotation without breaking stored data.
+
+### Audit trail
+
+Every proxied request appends a JSONL entry to `~/.honey-proxy/audit.jsonl` containing only metadata:
+
+```json
+{
+  "timestamp": "2026-02-20T14:32:01.123Z",
+  "requestId": "a1b2c3d4-...",
+  "sessionId": "f9e8d7c6-...",
+  "identifiersObfuscated": 12,
+  "numbersObfuscated": 3,
+  "durationMs": 1823,
+  "streaming": true,
+  "upstreamStatus": 200
+}
+```
+
+**Security invariant:** The audit log never contains real identifier names, fake names, or code content — only counts and timing.
+
+### Chunk-boundary-safe streaming
+
+SSE responses from Anthropic are deobfuscated using a `StreamDeobfuscator` that buffers on `\n\n` event boundaries. This prevents a fake identifier split across two TCP chunks from leaking to the client as two unrecognised halves. Complete events are deobfuscated and forwarded immediately; the trailing incomplete fragment is held back until the next chunk or stream end.
 
 ---
 
