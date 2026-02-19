@@ -1,0 +1,24 @@
+{
+  "name": "honey-encryption-proxy",
+  "version": "0.1.0",
+  "description": "Honey Encryption proxy for Claude Code — obfuscates proprietary code identifiers before sending to Anthropic",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/proxy.ts",
+    "build": "bun build src/proxy.ts --outdir dist --target bun",
+    "typecheck": "tsc --noEmit",
+    "lint": "bunx eslint src tests",
+    "lint:fix": "bunx eslint src tests --fix",
+    "format:check": "bunx prettier --check src tests",
+    "prettier": "bunx prettier",
+    "test": "bun test",
+    "ci": "bun run typecheck && bun run test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "@types/node": "^22.0.0"
+  }
+}
