@@ -21,11 +21,18 @@ import {
 } from './extractor.ts'
 import type { IdentifierMapping, SessionKey } from '../types.ts'
 
+export interface ObfuscationStats {
+  readonly identifiersObfuscated: number
+  readonly numbersObfuscated: number
+}
+
 export interface MapResult {
   /** Text with code blocks obfuscated (fake identifiers). */
   readonly obfuscated: string
   /** Bidirectional identifier mapping for this request. */
   readonly mapping: IdentifierMapping
+  /** Counts of obfuscated items for audit logging. */
+  readonly stats: ObfuscationStats
 }
 
 /**
@@ -48,7 +55,11 @@ export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
       realToFake: new Map(),
       fakeToReal: new Map(),
     }
-    return { obfuscated: text, mapping: emptyMapping }
+    return {
+      obfuscated: text,
+      mapping: emptyMapping,
+      stats: { identifiersObfuscated: 0, numbersObfuscated: 0 },
+    }
   }
 
   // 1. Strip comments before extraction so comment words are never collected
@@ -92,7 +103,12 @@ export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
     return obfuscateStringLiterals(applied, identifierMapping.realToFake)
   })
 
-  return { obfuscated, mapping: fullMapping }
+  const stats: ObfuscationStats = {
+    identifiersObfuscated: identifierMapping.realToFake.size,
+    numbersObfuscated: numericMapping.realToFake.size,
+  }
+
+  return { obfuscated, mapping: fullMapping, stats }
 }
 
 /**

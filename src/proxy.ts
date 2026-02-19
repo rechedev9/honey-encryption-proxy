@@ -22,8 +22,11 @@
 import { loadConfig } from './config.ts'
 import { deriveSessionKey } from './honey/key-manager.ts'
 import { obfuscateText, deobfuscateText } from './ast/mapper.ts'
-import { logger } from './logger.ts'
-import type { IdentifierMapping } from './types.ts'
+import type { ObfuscationStats } from './ast/mapper.ts'
+import { logger, setLogLevel } from './logger.ts'
+import { writeAuditEntry } from './audit.ts'
+import { StreamDeobfuscator } from './stream-deobfuscator.ts'
+import type { AuditEntry, IdentifierMapping } from './types.ts'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -34,6 +37,7 @@ if (!configResult.ok) {
 }
 
 const config = configResult.value
+setLogLevel(config.logLevel)
 
 // Derive a persistent session key from the passphrase.
 // A fresh salt is generated each time the proxy starts; re-derivation
@@ -67,11 +71,17 @@ interface AnthropicRequestBody {
 
 // ── Request handling ─────────────────────────────────────────────────────────
 
-function obfuscateMessages(
-  messages: AnthropicMessage[],
-): { messages: AnthropicMessage[]; mapping: IdentifierMapping } {
+interface ObfuscateResult {
+  readonly messages: AnthropicMessage[]
+  readonly mapping: IdentifierMapping
+  readonly stats: ObfuscationStats
+}
+
+function obfuscateMessages(messages: AnthropicMessage[]): ObfuscateResult {
   const realToFake = new Map<string, string>()
   const fakeToReal = new Map<string, string>()
+  let totalIdentifiers = 0
+  let totalNumbers = 0
 
   const obfuscated = messages.map((msg) => {
     const content = typeof msg.content === 'string' ? msg.content : null
@@ -87,10 +97,17 @@ function obfuscateMessages(
       fakeToReal.set(fake, real)
     }
 
+    totalIdentifiers += result.stats.identifiersObfuscated
+    totalNumbers += result.stats.numbersObfuscated
+
     return { ...msg, content: result.obfuscated }
   })
 
-  return { messages: obfuscated, mapping: { realToFake, fakeToReal } }
+  return {
+    messages: obfuscated,
+    mapping: { realToFake, fakeToReal },
+    stats: { identifiersObfuscated: totalIdentifiers, numbersObfuscated: totalNumbers },
+  }
 }
 
 async function forwardRequest(
@@ -144,7 +161,7 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     return forwardRequest(req, rawBody)
   }
 
-  const { messages: obfuscatedMessages, mapping } = obfuscateMessages(messages)
+  const { messages: obfuscatedMessages, mapping, stats } = obfuscateMessages(messages)
 
   const mappingSize = mapping.realToFake.size
   if (mappingSize > 0) {
@@ -153,12 +170,29 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
 
   const outBody = JSON.stringify({ ...parsed, messages: obfuscatedMessages })
   const upstreamResponse = await forwardRequest(req, outBody)
+  const isStreaming = parsed.stream === true ||
+    (upstreamResponse.headers.get('content-type') ?? '').includes('text/event-stream')
+
+  const emitAudit = (upstreamStatus: number): void => {
+    const entry: AuditEntry = {
+      timestamp: new Date().toISOString(),
+      requestId,
+      sessionId: SESSION_KEY.sessionId,
+      identifiersObfuscated: stats.identifiersObfuscated,
+      numbersObfuscated: stats.numbersObfuscated,
+      durationMs: Date.now() - startMs,
+      streaming: isStreaming,
+      upstreamStatus,
+    }
+    void writeAuditEntry(entry)
+  }
 
   // ── Handle streaming (SSE) ────────────────────────────────────────────────
 
-  const contentType = upstreamResponse.headers.get('content-type') ?? ''
-  if (parsed.stream === true || contentType.includes('text/event-stream')) {
-    return handleStreamingResponse(upstreamResponse, mapping, requestId, startMs)
+  if (isStreaming) {
+    return handleStreamingResponse(
+      upstreamResponse, mapping, requestId, startMs, emitAudit,
+    )
   }
 
   // ── Handle buffered response ───────────────────────────────────────────────
@@ -167,6 +201,7 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
   const deobfuscated = mappingSize > 0 ? deobfuscateText(responseText, mapping) : responseText
 
   logger.info('Request complete', { requestId, ms: Date.now() - startMs })
+  emitAudit(upstreamResponse.status)
 
   return new Response(deobfuscated, {
     status: upstreamResponse.status,
@@ -179,12 +214,13 @@ function handleStreamingResponse(
   mapping: IdentifierMapping,
   requestId: string,
   startMs: number,
+  emitAudit: (upstreamStatus: number) => void,
 ): Response {
   if (!upstreamResponse.body) {
     return upstreamResponse
   }
 
-  const hasMappings = mapping.fakeToReal.size > 0
+  const deobfuscator = new StreamDeobfuscator(mapping)
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
 
@@ -199,18 +235,27 @@ function handleStreamingResponse(
           if (done) break
 
           const chunk = decoder.decode(value, { stream: true })
-          const processed = hasMappings ? deobfuscateText(chunk, mapping) : chunk
-          controller.enqueue(encoder.encode(processed))
+          const processed = deobfuscator.processChunk(chunk)
+          if (processed) {
+            controller.enqueue(encoder.encode(processed))
+          }
         }
 
-        // Flush remaining decoder state
+        // Flush remaining decoder + deobfuscator state
         const tail = decoder.decode(undefined, { stream: false })
         if (tail) {
-          const processed = hasMappings ? deobfuscateText(tail, mapping) : tail
-          controller.enqueue(encoder.encode(processed))
+          const processed = deobfuscator.processChunk(tail)
+          if (processed) {
+            controller.enqueue(encoder.encode(processed))
+          }
+        }
+        const flushed = deobfuscator.flush()
+        if (flushed) {
+          controller.enqueue(encoder.encode(flushed))
         }
 
         logger.info('Stream complete', { requestId, ms: Date.now() - startMs })
+        emitAudit(upstreamResponse.status)
         controller.close()
       } catch (e) {
         logger.error('Stream error', { requestId, error: String(e) })
@@ -231,7 +276,7 @@ function handleStreamingResponse(
 
 const MESSAGES_PATH = '/v1/messages'
 
-Bun.serve({
+const server = Bun.serve({
   port: config.proxyPort,
   hostname: '127.0.0.1',
 
@@ -262,6 +307,18 @@ Bun.serve({
     })
   },
 })
+
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+
+function handleShutdown(signal: string): void {
+  logger.info('Shutdown initiated', { signal })
+  server.stop()
+  logger.info('Server stopped')
+  process.exit(0)
+}
+
+process.on('SIGINT', () => handleShutdown('SIGINT'))
+process.on('SIGTERM', () => handleShutdown('SIGTERM'))
 
 logger.info('Honey proxy ready', {
   url: `http://127.0.0.1:${config.proxyPort}`,

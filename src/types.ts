@@ -50,6 +50,19 @@ export interface IdentifierMapping {
   readonly fakeToReal: ReadonlyMap<string, string>
 }
 
+// ── Audit ────────────────────────────────────────────────────────────────────
+
+export interface AuditEntry {
+  readonly timestamp: string
+  readonly requestId: string
+  readonly sessionId: string
+  readonly identifiersObfuscated: number
+  readonly numbersObfuscated: number
+  readonly durationMs: number
+  readonly streaming: boolean
+  readonly upstreamStatus: number
+}
+
 // ── Request context ──────────────────────────────────────────────────────────
 
 export interface RequestContext {

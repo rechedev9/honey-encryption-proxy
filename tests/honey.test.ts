@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'bun:test'
 import { randomBytes } from 'node:crypto'
-import { encrypt, decrypt, decryptHoney } from '../src/honey/engine.ts'
+import { encrypt, decrypt, decryptHoney, FORMAT_VERSION } from '../src/honey/engine.ts'
 import { deriveSessionKey, deriveFromSalt } from '../src/honey/key-manager.ts'
 import { CORPUS_SIZE } from '../src/corpus/index.ts'
 
@@ -56,7 +56,7 @@ describe('HoneyEngine', () => {
       expect(decResult.ok).toBe(false)
     })
 
-    it('produces a deterministic ciphertext structure (nonce, tag, ciphertext present)', () => {
+    it('produces a deterministic ciphertext structure (version, nonce, tag, ciphertext present)', () => {
       const keyResult = deriveSessionKey(PASSPHRASE)
       expect(keyResult.ok).toBe(true)
       if (!keyResult.ok) return
@@ -65,9 +65,49 @@ describe('HoneyEngine', () => {
       expect(encResult.ok).toBe(true)
       if (!encResult.ok) return
 
-      // nonce(16) + tag(32) + ciphertext(4) = 52 bytes → base64url ~= 70 chars
+      // version(1) + nonce(16) + tag(32) + ciphertext(4) = 53 bytes
       const raw = Buffer.from(encResult.value.encoded, 'base64url')
-      expect(raw.length).toBe(52)
+      expect(raw.length).toBe(53)
+    })
+
+    it('v1 payload starts with version byte 0x01', () => {
+      const keyResult = deriveSessionKey(PASSPHRASE)
+      expect(keyResult.ok).toBe(true)
+      if (!keyResult.ok) return
+
+      const encResult = encrypt(SAMPLE_CODE, keyResult.value)
+      expect(encResult.ok).toBe(true)
+      if (!encResult.ok) return
+
+      const raw = Buffer.from(encResult.value.encoded, 'base64url')
+      expect(raw[0]).toBe(FORMAT_VERSION)
+    })
+
+    it('decrypts legacy v0 payloads (no version byte)', () => {
+      const keyResult = deriveSessionKey(PASSPHRASE)
+      expect(keyResult.ok).toBe(true)
+      if (!keyResult.ok) return
+
+      // Manually build a v0 payload (nonce || tag || ciphertext, no version byte)
+      const { createCipheriv, createHmac, randomBytes: rb } = require('node:crypto')
+      const nonce = rb(16)
+      const { encode: dteEncode, indexToBytes } = require('../src/honey/dte-corpus.ts')
+      const index = dteEncode(SAMPLE_CODE, keyResult.value.key)
+      const plainBytes = indexToBytes(index)
+      const cipher = createCipheriv('aes-256-ctr', keyResult.value.key, nonce)
+      const ct = Buffer.concat([cipher.update(plainBytes), cipher.final()])
+      const tag = createHmac('sha256', keyResult.value.macKey)
+        .update(nonce)
+        .update(ct)
+        .digest()
+      const v0Payload = Buffer.concat([nonce, tag, ct])
+      const encoded = v0Payload.toString('base64url')
+
+      const decResult = decrypt({ encoded }, keyResult.value)
+      expect(decResult.ok).toBe(true)
+      if (!decResult.ok) return
+      expect(typeof decResult.value).toBe('string')
+      expect(decResult.value.length).toBeGreaterThan(0)
     })
   })
 

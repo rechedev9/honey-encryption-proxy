@@ -10,13 +10,14 @@
  *     4. HMAC-SHA256(nonce || ciphertext, macKey) → tag   [integrity for
  *                                                          the legitimate
  *                                                          proxy]
- *     5. Return base64(nonce || tag || ciphertext)
+ *     5. Return base64(version || nonce || tag || ciphertext)
  *
  *   decrypt(encoded, sessionKey):
- *     1. Parse nonce || tag || ciphertext
- *     2. Verify HMAC (only the legitimate proxy can pass this)
- *     3. AES-256-CTR.decrypt(ciphertext, key, nonce) → index bytes
- *     4. DTE.decode(index) → plausible code (real if key is correct)
+ *     1. Detect version byte (v1) or fall back to legacy (v0) layout
+ *     2. Parse nonce || tag || ciphertext
+ *     3. Verify HMAC (only the legitimate proxy can pass this)
+ *     4. AES-256-CTR.decrypt(ciphertext, key, nonce) → index bytes
+ *     5. DTE.decode(index) → plausible code (real if key is correct)
  *
  * Honey property:
  *   If an adversary strips the MAC and brute-forces the AES key, they get
@@ -38,8 +39,11 @@ const NONCE_BYTES = 16   // AES-CTR IV
 const TAG_BYTES = 32     // HMAC-SHA256 output
 const INDEX_BYTES = 4    // serialised corpus index
 
+/** Wire format version. Prepended as the first byte of every v1+ payload. */
+export const FORMAT_VERSION = 1
+
 export interface EncryptedPayload {
-  /** Base64url-encoded nonce || HMAC tag || ciphertext */
+  /** Base64url-encoded version || nonce || HMAC tag || ciphertext */
   readonly encoded: string
 }
 
@@ -54,12 +58,93 @@ export function encrypt(code: string, sessionKey: SessionKey): Result<EncryptedP
 
   const tag = hmacTag(nonce, ciphertext, sessionKey.macKey)
 
-  const payload = Buffer.concat([nonce, tag, ciphertext])
+  const versionByte = Buffer.from([FORMAT_VERSION])
+  const payload = Buffer.concat([versionByte, nonce, tag, ciphertext])
   return ok({ encoded: payload.toString('base64url') })
 }
 
 export function decrypt(payload: EncryptedPayload, sessionKey: SessionKey): Result<string> {
   const raw = Buffer.from(payload.encoded, 'base64url')
+
+  if (raw.length > 0 && raw[0] === FORMAT_VERSION) {
+    return decryptVersioned(raw, sessionKey, false)
+  }
+  return decryptLegacy(raw, sessionKey, false)
+}
+
+/**
+ * Demonstrates the honey property: decrypting with a wrong key always
+ * produces a plausible (but different) code snippet.
+ */
+export function decryptHoney(payload: EncryptedPayload, wrongKey: Buffer): string {
+  const raw = Buffer.from(payload.encoded, 'base64url')
+
+  if (raw.length > 0 && raw[0] === FORMAT_VERSION) {
+    const offset = 1
+    const minLen = offset + NONCE_BYTES + TAG_BYTES + INDEX_BYTES
+    if (raw.length < minLen) return ''
+
+    const nonce = raw.subarray(offset, offset + NONCE_BYTES)
+    const ciphertext = raw.subarray(offset + NONCE_BYTES + TAG_BYTES)
+
+    const decipher = createDecipheriv('aes-256-ctr', wrongKey, nonce)
+    const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+
+    const index = bytesToIndex(plainBytes)
+    return dteDecode(index)
+  }
+
+  // Legacy v0 layout
+  if (raw.length < NONCE_BYTES + TAG_BYTES + INDEX_BYTES) return ''
+
+  const nonce = raw.subarray(0, NONCE_BYTES)
+  const ciphertext = raw.subarray(NONCE_BYTES + TAG_BYTES)
+
+  const decipher = createDecipheriv('aes-256-ctr', wrongKey, nonce)
+  const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+
+  const index = bytesToIndex(plainBytes)
+  return dteDecode(index)
+}
+
+// ── Internal helpers ────────────────────────────────────────────────────────
+
+function decryptVersioned(
+  raw: Buffer,
+  sessionKey: SessionKey,
+  _skipMac: boolean,
+): Result<string> {
+  const offset = 1
+  const minLen = offset + NONCE_BYTES + TAG_BYTES + INDEX_BYTES
+
+  if (raw.length < minLen) {
+    return err(new Error('Payload too short'))
+  }
+
+  const nonce = raw.subarray(offset, offset + NONCE_BYTES)
+  const tag = raw.subarray(offset + NONCE_BYTES, offset + NONCE_BYTES + TAG_BYTES)
+  const ciphertext = raw.subarray(offset + NONCE_BYTES + TAG_BYTES)
+
+  const expectedTag = hmacTag(nonce, ciphertext, sessionKey.macKey)
+
+  if (!timingSafeEqual(tag, expectedTag)) {
+    return err(new Error('HMAC verification failed'))
+  }
+
+  const decipher = createDecipheriv('aes-256-ctr', sessionKey.key, nonce)
+  const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+
+  const index = bytesToIndex(plainBytes)
+  const code = dteDecode(index)
+
+  return ok(code)
+}
+
+function decryptLegacy(
+  raw: Buffer,
+  sessionKey: SessionKey,
+  _skipMac: boolean,
+): Result<string> {
   const minLen = NONCE_BYTES + TAG_BYTES + INDEX_BYTES
 
   if (raw.length < minLen) {
@@ -83,25 +168,6 @@ export function decrypt(payload: EncryptedPayload, sessionKey: SessionKey): Resu
   const code = dteDecode(index)
 
   return ok(code)
-}
-
-/**
- * Demonstrates the honey property: decrypting with a wrong key always
- * produces a plausible (but different) code snippet.
- */
-export function decryptHoney(payload: EncryptedPayload, wrongKey: Buffer): string {
-  const raw = Buffer.from(payload.encoded, 'base64url')
-  if (raw.length < NONCE_BYTES + TAG_BYTES + INDEX_BYTES) return ''
-
-  const nonce = raw.subarray(0, NONCE_BYTES)
-  const ciphertext = raw.subarray(NONCE_BYTES + TAG_BYTES)
-
-  // Decrypt without MAC check — produces different bytes with wrong key
-  const decipher = createDecipheriv('aes-256-ctr', wrongKey, nonce)
-  const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
-
-  const index = bytesToIndex(plainBytes)
-  return dteDecode(index)
 }
 
 function hmacTag(nonce: Buffer, ciphertext: Buffer, macKey: Buffer): Buffer {
