@@ -50,8 +50,10 @@ export function stripComments(code: string): string {
 
 // ── Code block extraction ────────────────────────────────────────────────────
 
-// RegExp constructor used to avoid backtick-in-regex-literal TypeScript 5.9+ parse error.
-const FENCE_REGEX = new RegExp('^```([^\\n`]*)\\n([\\s\\S]*?)^```', 'gm')
+// Two separate patterns — one for backtick fences, one for tilde fences.
+// RegExp constructors used to avoid backtick/tilde-in-regex-literal parse issues.
+const FENCE_REGEX_BACKTICK = new RegExp('^```([^\\n`]*)\\n([\\s\\S]*?)^```', 'gm')
+const FENCE_REGEX_TILDE = new RegExp('^~~~([^\\n~]*)\\n([\\s\\S]*?)^~~~', 'gm')
 
 /**
  * Extracts all fenced code blocks from a markdown/prompt string.
@@ -61,10 +63,8 @@ export function extractCodeBlocks(text: string): CodeBlock[] {
   const blocks: CodeBlock[] = []
   let match: RegExpExecArray | null
 
-  // Reset lastIndex before use
-  FENCE_REGEX.lastIndex = 0
-
-  while ((match = FENCE_REGEX.exec(text)) !== null) {
+  FENCE_REGEX_BACKTICK.lastIndex = 0
+  while ((match = FENCE_REGEX_BACKTICK.exec(text)) !== null) {
     blocks.push({
       lang: (match[1] ?? '').trim(),
       content: match[2] ?? '',
@@ -72,6 +72,19 @@ export function extractCodeBlocks(text: string): CodeBlock[] {
       endOffset: match.index + match[0].length,
     })
   }
+
+  FENCE_REGEX_TILDE.lastIndex = 0
+  while ((match = FENCE_REGEX_TILDE.exec(text)) !== null) {
+    blocks.push({
+      lang: (match[1] ?? '').trim(),
+      content: match[2] ?? '',
+      startOffset: match.index,
+      endOffset: match.index + match[0].length,
+    })
+  }
+
+  // Sort by document position so transformCodeBlocks processes them in order
+  blocks.sort((a, b) => a.startOffset - b.startOffset)
 
   return blocks
 }

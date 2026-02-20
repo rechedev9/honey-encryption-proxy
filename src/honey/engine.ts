@@ -82,6 +82,11 @@ export function decrypt(payload: EncryptedPayload, sessionKey: SessionKey): Resu
 /**
  * Demonstrates the honey property: decrypting with a wrong key always
  * produces a plausible (but different) code snippet.
+ *
+ * @internal This function intentionally skips HMAC verification. It is
+ * provided ONLY for testing and demonstration of the honey-encryption
+ * security property. It MUST NOT be called in any request-processing
+ * path — doing so would bypass integrity checks entirely.
  */
 export function decryptHoney(payload: EncryptedPayload, wrongKey: Buffer): string {
   const raw = Buffer.from(payload.encoded, 'base64url')

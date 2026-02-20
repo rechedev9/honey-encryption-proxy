@@ -10,13 +10,23 @@
 
 import { appendFile, mkdir, lstat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { logger } from './logger.ts'
 import type { AuditEntry } from './types.ts'
 
 const AUDIT_DIR = join(homedir(), '.honey-proxy')
 const AUDIT_FILE = join(AUDIT_DIR, 'audit.jsonl')
+
+// Guard against $HOME manipulation: verify the audit directory stays
+// within the real home directory before any writes occur.
+const _resolvedHome = resolve(homedir())
+const _resolvedDir = resolve(AUDIT_DIR)
+if (!_resolvedDir.startsWith(_resolvedHome + sep)) {
+  throw new Error(
+    `Audit directory escapes home directory: ${_resolvedDir} is not under ${_resolvedHome}`,
+  )
+}
 
 let dirReady = false
 

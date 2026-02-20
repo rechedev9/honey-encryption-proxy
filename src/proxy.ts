@@ -58,9 +58,9 @@ delete process.env['HONEY_PASSPHRASE']
 
 logger.info('Honey proxy starting', {
   port: config.proxyPort,
-  sessionId: SESSION_KEY.sessionId,
   upstream: config.upstreamBaseUrl,
 })
+logger.debug('Session established', { sessionId: SESSION_KEY.sessionId })
 
 // ── Anthropic message type (minimal surface) ───────────────────────────────────────────────
 
@@ -85,6 +85,24 @@ const ALLOWED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
   'accept',
   'accept-encoding',
 ])
+
+/** Response headers forwarded from upstream back to the Claude Code client. */
+const ALLOWED_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
+  'content-type',
+  'content-length',
+  'transfer-encoding',
+  'cache-control',
+])
+
+function filterResponseHeaders(upstream: Headers): Headers {
+  const filtered = new Headers()
+  for (const [name, value] of upstream.entries()) {
+    if (ALLOWED_RESPONSE_HEADERS.has(name.toLowerCase())) {
+      filtered.set(name, value)
+    }
+  }
+  return filtered
+}
 
 // ── Request handling ─────────────────────────────────────────────────────────────────────
 
@@ -313,7 +331,7 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
 
   return new Response(deobfuscated, {
     status: upstreamResponse.status,
-    headers: upstreamResponse.headers,
+    headers: filterResponseHeaders(upstreamResponse.headers),
   })
 }
 
@@ -325,7 +343,10 @@ function handleStreamingResponse(
   emitAudit: (upstreamStatus: number) => void,
 ): Response {
   if (!upstreamResponse.body) {
-    return upstreamResponse
+    return new Response(null, {
+      status: upstreamResponse.status,
+      headers: filterResponseHeaders(upstreamResponse.headers),
+    })
   }
 
   const deobfuscator = new StreamDeobfuscator(mapping)
@@ -376,7 +397,7 @@ function handleStreamingResponse(
 
   return new Response(transformedBody, {
     status: upstreamResponse.status,
-    headers: upstreamResponse.headers,
+    headers: filterResponseHeaders(upstreamResponse.headers),
   })
 }
 
