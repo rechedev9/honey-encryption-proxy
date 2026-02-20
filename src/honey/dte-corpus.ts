@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Corpus-based Distribution-Transforming Encoder (DTE) — Variante A.
  *
  * Provides the Honey Encryption indistinguishability property:
@@ -55,7 +55,7 @@ export function decodeEntry(index: number): CorpusEntry {
  * Returns the index serialised as a 4-byte big-endian buffer.
  */
 export function indexToBytes(index: number): Buffer {
-  const buf = Buffer.allocUnsafe(4)
+  const buf = Buffer.alloc(4)
   buf.writeUInt32BE(index, 0)
   return buf
 }

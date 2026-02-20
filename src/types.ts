@@ -28,6 +28,11 @@ export interface SessionKey {
   readonly sessionId: string
   readonly salt: Buffer
   readonly derivedAt: number
+  /**
+   * Prevents accidental key-material serialization.
+   * JSON.stringify(sessionKey) returns only safe metadata — never key bytes.
+   */
+  toJSON(): { readonly sessionId: string; readonly derivedAt: number }
 }
 
 // ── Code extraction ─────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Honey Encryption engine.
  *
  * Implements the full HE pipeline for a code string:
@@ -63,6 +63,13 @@ export function encrypt(code: string, sessionKey: SessionKey): Result<EncryptedP
   return ok({ encoded: payload.toString('base64url') })
 }
 
+/**
+ * Decrypts an EncryptedPayload using the given SessionKey.
+ *
+ * All failure modes (short payload, HMAC mismatch, etc.) are reported as
+ * a single generic error message - 'Decryption failed' - to prevent HMAC
+ * oracle attacks that could leak information about the wire format.
+ */
 export function decrypt(payload: EncryptedPayload, sessionKey: SessionKey): Result<string> {
   const raw = Buffer.from(payload.encoded, 'base64url')
 
@@ -118,7 +125,7 @@ function decryptVersioned(
   const minLen = offset + NONCE_BYTES + TAG_BYTES + INDEX_BYTES
 
   if (raw.length < minLen) {
-    return err(new Error('Payload too short'))
+    return err(new Error('Decryption failed'))
   }
 
   const nonce = raw.subarray(offset, offset + NONCE_BYTES)
@@ -128,7 +135,7 @@ function decryptVersioned(
   const expectedTag = hmacTag(nonce, ciphertext, sessionKey.macKey)
 
   if (!timingSafeEqual(tag, expectedTag)) {
-    return err(new Error('HMAC verification failed'))
+    return err(new Error('Decryption failed'))
   }
 
   const decipher = createDecipheriv('aes-256-ctr', sessionKey.key, nonce)
@@ -148,7 +155,7 @@ function decryptLegacy(
   const minLen = NONCE_BYTES + TAG_BYTES + INDEX_BYTES
 
   if (raw.length < minLen) {
-    return err(new Error('Payload too short'))
+    return err(new Error('Decryption failed'))
   }
 
   const nonce = raw.subarray(0, NONCE_BYTES)
@@ -158,7 +165,7 @@ function decryptLegacy(
   const expectedTag = hmacTag(nonce, ciphertext, sessionKey.macKey)
 
   if (!timingSafeEqual(tag, expectedTag)) {
-    return err(new Error('HMAC verification failed'))
+    return err(new Error('Decryption failed'))
   }
 
   const decipher = createDecipheriv('aes-256-ctr', sessionKey.key, nonce)

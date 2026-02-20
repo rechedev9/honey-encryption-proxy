@@ -50,6 +50,12 @@ if (!keyResult.ok) {
 
 const SESSION_KEY = keyResult.value
 
+// Scrub secrets from process.env immediately after use.
+// They are now held in  / ; keeping them in
+// process.env exposes them via /proc/self/environ on Linux/WSL.
+delete process.env['ANTHROPIC_API_KEY']
+delete process.env['HONEY_PASSPHRASE']
+
 logger.info('Honey proxy starting', {
   port: config.proxyPort,
   sessionId: SESSION_KEY.sessionId,
@@ -225,6 +231,9 @@ async function forwardRequest(
   })
 }
 
+/** Maximum allowed request body size (10 MiB). Prevents memory/CPU DoS. */
+const MAX_BODY_BYTES = 10 * 1024 * 1024
+
 async function handleMessagesEndpoint(req: Request): Promise<Response> {
   const requestId = crypto.randomUUID()
   const startMs = Date.now()
@@ -237,6 +246,15 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     return new Response('Bad Request', { status: 400 })
   }
 
+  if (rawBody.length > MAX_BODY_BYTES) {
+    logger.warn('Request body exceeds size limit — rejecting', {
+      requestId,
+      size: rawBody.length,
+      limit: MAX_BODY_BYTES,
+    })
+    return new Response('Request Entity Too Large', { status: 413 })
+  }
+
   let parsed: AnthropicRequestBody
   try {
     parsed = JSON.parse(rawBody) as AnthropicRequestBody
@@ -247,7 +265,8 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
 
   const messages = parsed.messages
   if (!Array.isArray(messages)) {
-    return forwardRequest(req, rawBody)
+    logger.warn('Request missing messages array — rejecting', { requestId })
+    return new Response('Bad Request: messages must be an array', { status: 400 })
   }
 
   const { messages: obfuscatedMessages, mapping, stats } = obfuscateMessages(messages)

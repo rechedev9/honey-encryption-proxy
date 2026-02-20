@@ -48,6 +48,9 @@ export function deriveFromSalt(passphrase: string, salt: Buffer): Result<Session
     sessionId,
     salt,
     derivedAt: Date.now(),
+    toJSON() {
+      return { sessionId: this.sessionId, derivedAt: this.derivedAt }
+    },
   })
 }
 

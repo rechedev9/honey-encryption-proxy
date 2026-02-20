@@ -14,9 +14,7 @@
     "test": "bun test",
     "ci": "bun run typecheck && bun run test"
   },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "typescript": "^5.7.2",
     "@types/node": "^22.0.0"

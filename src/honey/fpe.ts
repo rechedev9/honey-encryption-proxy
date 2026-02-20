@@ -46,7 +46,7 @@ const VOCAB: readonly string[] = [
   // nouns
   'data', 'item', 'value', 'node', 'element', 'component', 'service',
   'manager', 'handler', 'controller', 'router', 'config', 'context', 'state',
-  'store', 'queue', 'pool', 'buffer', 'session', 'token', 'payload',
+  'store', 'cursor', 'pool', 'buffer', 'session', 'token', 'payload',
   'response', 'request', 'client', 'server', 'adapter', 'provider',
   'resolver', 'factory', 'builder', 'parser', 'formatter', 'validator',
   'processor', 'generator', 'listener', 'observer', 'emitter', 'scheduler',
@@ -62,11 +62,23 @@ const VOCAB: readonly string[] = [
   'screen', 'dialog', 'drawer', 'sidebar', 'section', 'article', 'page',
   // modifiers / size words
   'base', 'root', 'default', 'global', 'local', 'primary', 'secondary',
-  'current', 'active', 'pending', 'ready', 'batch', 'stream', 'async',
-  'static', 'dynamic', 'internal', 'external', 'remote', 'local', 'shared',
+  'current', 'active', 'pending', 'ready', 'optional', 'sequential', 'async',
+  'static', 'dynamic', 'internal', 'external', 'remote', 'concurrent', 'shared',
   'private', 'public', 'max', 'min', 'total', 'size', 'length', 'offset',
-  'limit', 'threshold', 'interval', 'timeout', 'retry', 'fallback', 'proxy',
+  'limit', 'threshold', 'interval', 'timeout', 'incremental', 'fallback', 'required',
 ] as const
+
+// Verify at module load time that VOCAB contains no duplicates.
+// A duplicate reduces entropy and creates a statistical fingerprint in
+// the output distribution — caught here rather than silently degrading.
+if (process.env['NODE_ENV'] !== 'test') {
+  const vocabSet = new Set(VOCAB)
+  if (vocabSet.size !== VOCAB.length) {
+    throw new Error(
+      `VOCAB integrity violation: ${VOCAB.length} entries but only ${vocabSet.size} unique — fix duplicates in fpe.ts`,
+    )
+  }
+}
 
 // ── Skip-list: identifiers that must not be renamed ───────────────────────────
 
@@ -183,6 +195,9 @@ export function shouldObfuscate(identifier: string): boolean {
   return true
 }
 
+/** Maximum number of user-defined identifiers to obfuscate per request. */
+const MAX_IDENTIFIERS = 5_000
+
 /**
  * Builds a deterministic bidirectional mapping for a set of identifiers.
  * Identifiers in the skip-list are excluded automatically.
@@ -196,7 +211,15 @@ export function buildIdentifierMapping(
 
   const usedFakes = new Set<string>()
 
-  for (const id of identifiers) {
+  if (identifiers.size > MAX_IDENTIFIERS) {
+    // Log a warning but continue with the full set — truncating would
+    // silently leak identifiers beyond the cap. This limit exists to
+    // warn operators of abnormally large payloads.
+    console.warn(`[honey-proxy] Identifier count ${identifiers.size} exceeds cap ${MAX_IDENTIFIERS} — possible DoS payload`)
+  }
+
+  const sorted = [...identifiers].sort()
+  for (const id of sorted) {
     if (!shouldObfuscate(id)) continue
 
     const fake = buildFakeIdentifier(id, fpeKey, usedFakes)

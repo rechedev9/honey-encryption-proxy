@@ -8,7 +8,7 @@
  * Fire-and-forget: failures log a warning but never block the response.
  */
 
-import { appendFile, mkdir } from 'node:fs/promises'
+import { appendFile, mkdir, lstat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -33,6 +33,29 @@ export async function writeAuditEntry(entry: AuditEntry): Promise<void> {
       dirReady = true
     } catch (e: unknown) {
       logger.warn('Audit dir creation failed', {
+        error: e instanceof Error ? e.message : String(e),
+      })
+      return
+    }
+  }
+
+  // Guard against symlink attacks: if the audit file path is a symlink,
+  // an attacker could redirect writes to an arbitrary target file.
+  try {
+    const stats = await lstat(AUDIT_FILE)
+    if (stats.isSymbolicLink()) {
+      logger.warn('Audit file is a symlink — refusing to write', { path: AUDIT_FILE })
+      return
+    }
+  } catch (e: unknown) {
+    // ENOENT means the file does not exist yet — safe to create.
+    // Any other error is unexpected: log and bail.
+    const isNotFound =
+      e instanceof Error &&
+      'code' in e &&
+      (e as { code: unknown }).code === 'ENOENT'
+    if (!isNotFound) {
+      logger.warn('Audit file access check failed', {
         error: e instanceof Error ? e.message : String(e),
       })
       return
