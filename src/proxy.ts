@@ -20,15 +20,15 @@
  */
 
 import { loadConfig } from './config.ts'
-import { deriveSessionKey } from './honey/key-manager.ts'
-import { obfuscateText, deobfuscateText } from './ast/mapper.ts'
+import { deriveSessionKey, zeroSessionKey } from './honey/key-manager.ts'
+import { buildGlobalMapping, applyMappingToFullText, deobfuscateText } from './ast/mapper.ts'
 import type { ObfuscationStats } from './ast/mapper.ts'
 import { logger, setLogLevel } from './logger.ts'
 import { writeAuditEntry } from './audit.ts'
 import { StreamDeobfuscator } from './stream-deobfuscator.ts'
 import type { AuditEntry, IdentifierMapping } from './types.ts'
 
-// ── Config ───────────────────────────────────────────────────────────────────
+// ── Config ───────────────────────────────────────────────────────────────────────────
 
 const configResult = loadConfig()
 if (!configResult.ok) {
@@ -56,7 +56,7 @@ logger.info('Honey proxy starting', {
   upstream: config.upstreamBaseUrl,
 })
 
-// ── Anthropic message type (minimal surface) ─────────────────────────────────
+// ── Anthropic message type (minimal surface) ───────────────────────────────────────────────
 
 interface AnthropicMessage {
   role: 'user' | 'assistant'
@@ -69,7 +69,18 @@ interface AnthropicRequestBody {
   [key: string]: unknown
 }
 
-// ── Request handling ─────────────────────────────────────────────────────────
+// ── Header allowlist ──────────────────────────────────────────────────────────────────
+
+/** Headers forwarded from the client to the upstream Anthropic API. */
+const ALLOWED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  'content-type',
+  'anthropic-version',
+  'anthropic-beta',
+  'accept',
+  'accept-encoding',
+])
+
+// ── Request handling ─────────────────────────────────────────────────────────────────────
 
 interface ObfuscateResult {
   readonly messages: AnthropicMessage[]
@@ -77,37 +88,107 @@ interface ObfuscateResult {
   readonly stats: ObfuscationStats
 }
 
+/**
+ * Extracts all plain-text strings from a message content value.
+ * Handles both string content and Anthropic's array-of-blocks format.
+ */
+function extractStringContents(content: unknown[]): readonly string[] {
+  const result: string[] = []
+  for (const item of content) {
+    if (
+      typeof item === 'object' &&
+      item !== null &&
+      'type' in item &&
+      'text' in item &&
+      (item as Record<string, unknown>)['type'] === 'text' &&
+      typeof (item as Record<string, unknown>)['text'] === 'string'
+    ) {
+      const text = (item as Record<string, unknown>)['text']
+      if (typeof text === 'string') {
+        result.push(text)
+      }
+    }
+  }
+  return result
+}
+
+/**
+ * Applies a mapping to a content value.
+ * Handles string content and array-of-blocks format.
+ */
+function applyMappingToContent(
+  content: string | unknown[],
+  mapping: IdentifierMapping,
+  identifierRealToFake: ReadonlyMap<string, string>,
+): string | unknown[] {
+  if (typeof content === 'string') {
+    return applyMappingToFullText(content, mapping, identifierRealToFake)
+  }
+  if (!Array.isArray(content)) return content
+  return content.map((item) => {
+    if (
+      typeof item === 'object' &&
+      item !== null &&
+      'type' in item &&
+      'text' in item &&
+      (item as Record<string, unknown>)['type'] === 'text' &&
+      typeof (item as Record<string, unknown>)['text'] === 'string'
+    ) {
+      const record = item as Record<string, unknown>
+      const text = record['text']
+      if (typeof text === 'string') {
+        const obfuscatedText = applyMappingToFullText(text, mapping, identifierRealToFake)
+        return { ...record, text: obfuscatedText }
+      }
+    }
+    return item
+  })
+}
+
 function obfuscateMessages(messages: AnthropicMessage[]): ObfuscateResult {
-  const realToFake = new Map<string, string>()
-  const fakeToReal = new Map<string, string>()
-  let totalIdentifiers = 0
-  let totalNumbers = 0
+  const emptyMapping: IdentifierMapping = {
+    realToFake: new Map(),
+    fakeToReal: new Map(),
+  }
 
-  const obfuscated = messages.map((msg) => {
-    const content = typeof msg.content === 'string' ? msg.content : null
-    if (content === null) return msg
-
-    const result = obfuscateText(content, SESSION_KEY)
-
-    // Merge mappings from this message
-    for (const [real, fake] of result.mapping.realToFake) {
-      realToFake.set(real, fake)
+  // Step 1: collect all string contents across every message (handles both
+  // string content and array-of-blocks format).
+  const allTexts: string[] = []
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      allTexts.push(msg.content)
+    } else if (Array.isArray(msg.content)) {
+      for (const t of extractStringContents(msg.content)) {
+        allTexts.push(t)
+      }
     }
-    for (const [fake, real] of result.mapping.fakeToReal) {
-      fakeToReal.set(fake, real)
-    }
+  }
 
-    totalIdentifiers += result.stats.identifiersObfuscated
-    totalNumbers += result.stats.numbersObfuscated
+  // Step 2: build one global mapping from code blocks across ALL messages.
+  // This ensures assistant messages with no code blocks still get their
+  // prose obfuscated using identifiers extracted from user messages.
+  const { mapping, identifierRealToFake, stats } = buildGlobalMapping(allTexts, SESSION_KEY)
 
-    return { ...msg, content: result.obfuscated }
+  if (mapping.realToFake.size === 0) {
+    return { messages, mapping: emptyMapping, stats }
+  }
+
+  logger.debug('Built global mapping', {
+    identifiers: stats.identifiersObfuscated,
+    numbers: stats.numbersObfuscated,
   })
 
-  return {
-    messages: obfuscated,
-    mapping: { realToFake, fakeToReal },
-    stats: { identifiersObfuscated: totalIdentifiers, numbersObfuscated: totalNumbers },
-  }
+  // Step 3: apply the global mapping to EVERY message (code blocks + prose).
+  const obfuscated = messages.map((msg) => {
+    const obfuscatedContent = applyMappingToContent(
+      msg.content,
+      mapping,
+      identifierRealToFake,
+    )
+    return { ...msg, content: obfuscatedContent }
+  })
+
+  return { messages: obfuscated, mapping, stats }
 }
 
 async function forwardRequest(
@@ -115,24 +196,32 @@ async function forwardRequest(
   body: string,
 ): Promise<Response> {
   const url = new URL(originalReq.url)
-  const upstreamUrl = config.upstreamBaseUrl + url.pathname + url.search
+  const upstreamBase = new URL(config.upstreamBaseUrl)
+  const upstreamUrl = new URL(url.pathname + url.search, upstreamBase.origin)
+
+  // Guard: verify origin has not been manipulated
+  if (upstreamUrl.origin !== upstreamBase.origin) {
+    logger.error('Upstream URL origin mismatch — possible SSRF', {
+      expected: upstreamBase.origin,
+      got: upstreamUrl.origin,
+    })
+    return new Response('Internal Server Error', { status: 500 })
+  }
 
   const headers = new Headers()
+  // Only forward allow-listed headers; inject the real API key
   for (const [name, value] of originalReq.headers.entries()) {
-    const lower = name.toLowerCase()
-    // Pass through all headers except host (we supply it via the URL)
-    if (lower !== 'host') {
+    if (ALLOWED_REQUEST_HEADERS.has(name.toLowerCase())) {
       headers.set(name, value)
     }
   }
-  // Ensure the real API key is used
   headers.set('x-api-key', config.anthropicApiKey)
-  headers.set('anthropic-api-key', config.anthropicApiKey)
 
-  return fetch(upstreamUrl, {
+  return fetch(upstreamUrl.toString(), {
     method: originalReq.method,
     headers,
     body,
+    redirect: 'manual',
   })
 }
 
@@ -152,8 +241,8 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
   try {
     parsed = JSON.parse(rawBody) as AnthropicRequestBody
   } catch (e) {
-    logger.warn('Non-JSON body — forwarding as-is', { requestId })
-    return forwardRequest(req, rawBody)
+    logger.warn('Non-JSON body on /v1/messages — rejecting', { requestId })
+    return new Response('Bad Request: /v1/messages requires a JSON body', { status: 400 })
   }
 
   const messages = parsed.messages
@@ -187,7 +276,7 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     void writeAuditEntry(entry)
   }
 
-  // ── Handle streaming (SSE) ────────────────────────────────────────────────
+  // ── Handle streaming (SSE) ────────────────────────────────────────────────────────────────────────────
 
   if (isStreaming) {
     return handleStreamingResponse(
@@ -195,7 +284,7 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     )
   }
 
-  // ── Handle buffered response ───────────────────────────────────────────────
+  // ── Handle buffered response ────────────────────────────────────────────────────────────────────────────────
 
   const responseText = await upstreamResponse.text()
   const deobfuscated = mappingSize > 0 ? deobfuscateText(responseText, mapping) : responseText
@@ -272,7 +361,7 @@ function handleStreamingResponse(
   })
 }
 
-// ── Bun HTTP server ──────────────────────────────────────────────────────────
+// ── Bun HTTP server ──────────────────────────────────────────────────────────────────────────
 
 const MESSAGES_PATH = '/v1/messages'
 
@@ -294,27 +383,41 @@ const server = Bun.serve({
     }
 
     // Transparent passthrough for all other routes
-    const upstreamUrl = config.upstreamBaseUrl + url.pathname + url.search
-    const headers = new Headers(req.headers)
-    headers.set('x-api-key', config.anthropicApiKey)
-    headers.set('anthropic-api-key', config.anthropicApiKey)
-    headers.delete('host')
+    const url2 = new URL(req.url)
+    const upstreamBase2 = new URL(config.upstreamBaseUrl)
+    const upstreamUrl2 = new URL(url2.pathname + url2.search, upstreamBase2.origin)
 
-    return fetch(upstreamUrl, {
+    if (upstreamUrl2.origin !== upstreamBase2.origin) {
+      logger.error('Passthrough URL origin mismatch', { got: upstreamUrl2.origin })
+      return new Response('Internal Server Error', { status: 500 })
+    }
+
+    const passthroughHeaders = new Headers()
+    for (const [name, value] of req.headers.entries()) {
+      if (ALLOWED_REQUEST_HEADERS.has(name.toLowerCase())) {
+        passthroughHeaders.set(name, value)
+      }
+    }
+    passthroughHeaders.set('x-api-key', config.anthropicApiKey)
+
+    return fetch(upstreamUrl2.toString(), {
       method: req.method,
-      headers,
+      headers: passthroughHeaders,
       body: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
+      redirect: 'manual',
     })
   },
 })
 
-// ── Graceful shutdown ─────────────────────────────────────────────────────────
-
+// ── Graceful shutdown ─────────────────────────────────────────────────────────────────────────────
 function handleShutdown(signal: string): void {
   logger.info('Shutdown initiated', { signal })
+  // Zero key material before the process exits
+  zeroSessionKey(SESSION_KEY)
+  // stop() waits for in-flight requests to complete before closing the server.
+  // Do NOT call process.exit() here — let the event loop drain naturally.
   server.stop()
   logger.info('Server stopped')
-  process.exit(0)
 }
 
 process.on('SIGINT', () => handleShutdown('SIGINT'))

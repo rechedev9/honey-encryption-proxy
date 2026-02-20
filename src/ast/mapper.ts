@@ -36,7 +36,7 @@ export interface MapResult {
 }
 
 /**
- * Obfuscates all code blocks found in `text` using FPE.
+ * Obfuscates all code blocks found in  using FPE.
  *
  * Steps:
  *  1. Extract fenced code blocks.
@@ -97,11 +97,15 @@ export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
 
   // 3. Transform each code block: strip comments → apply all mappings →
   //    obfuscate exact-match string literals.
-  const obfuscated = transformCodeBlocks(text, (block) => {
+  const codeObfuscated = transformCodeBlocks(text, (block) => {
     const stripped = stripComments(block.content)
     const applied = applyMapping(stripped, realToFake)
     return obfuscateStringLiterals(applied, identifierMapping.realToFake)
   })
+
+  // Also apply the mapping to prose text outside code blocks so real
+  // identifiers in natural-language context never reach Anthropic.
+  const obfuscated = applyMapping(codeObfuscated, realToFake)
 
   const stats: ObfuscationStats = {
     identifiersObfuscated: identifierMapping.realToFake.size,
@@ -121,4 +125,83 @@ export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
 export function deobfuscateText(text: string, mapping: IdentifierMapping): string {
   if (mapping.fakeToReal.size === 0) return text
   return reverseMapping(text, mapping.fakeToReal)
+}
+
+/**
+ * Builds a combined identifier+numeric mapping by scanning code blocks
+ * across all provided text strings. Used for cross-message global mapping.
+ *
+ * Returns the merged mapping plus the identifier-only mapping (needed for
+ * string-literal obfuscation which must not touch numeric replacements).
+ */
+export function buildGlobalMapping(
+  texts: readonly string[],
+  sessionKey: SessionKey,
+): {
+  readonly mapping: IdentifierMapping
+  readonly identifierRealToFake: ReadonlyMap<string, string>
+  readonly stats: ObfuscationStats
+} {
+  const allIdentifiers = new Set<string>()
+  const allStripped: string[] = []
+
+  for (const text of texts) {
+    for (const block of extractCodeBlocks(text)) {
+      const stripped = stripComments(block.content)
+      allStripped.push(stripped)
+      for (const id of extractIdentifiers(stripped)) {
+        allIdentifiers.add(id)
+      }
+    }
+  }
+
+  const identifierMapping = buildIdentifierMapping(allIdentifiers, sessionKey.fpeKey)
+  const numericMapping = buildNumericMapping(allStripped.join('\n'), sessionKey.fpeKey)
+
+  const realToFake = new Map<string, string>([
+    ...identifierMapping.realToFake,
+    ...numericMapping.realToFake,
+  ])
+  const fakeToReal = new Map<string, string>([
+    ...identifierMapping.fakeToReal,
+    ...numericMapping.fakeToReal,
+  ])
+
+  return {
+    mapping: { realToFake, fakeToReal },
+    identifierRealToFake: identifierMapping.realToFake,
+    stats: {
+      identifiersObfuscated: identifierMapping.realToFake.size,
+      numbersObfuscated: numericMapping.realToFake.size,
+    },
+  }
+}
+
+/**
+ * Applies a pre-built mapping to the full text: code blocks get comment
+ * stripping + full mapping + string-literal obfuscation; prose outside
+ * code blocks gets identifier+numeric mapping applied (word-boundary safe).
+ *
+ * This fixes the prose-leakage finding: real identifiers that appear in
+ * natural-language context are obfuscated with the same fake names used
+ * inside code fences, so Anthropic never sees real names in prose either.
+ */
+export function applyMappingToFullText(
+  text: string,
+  mapping: IdentifierMapping,
+  identifierRealToFake: ReadonlyMap<string, string>,
+): string {
+  if (mapping.realToFake.size === 0) return text
+
+  // Step 1: transform code blocks (strip comments + full mapping + string literals)
+  const withCodeObfuscated = transformCodeBlocks(text, (block) => {
+    const stripped = stripComments(block.content)
+    const applied = applyMapping(stripped, mapping.realToFake)
+    return obfuscateStringLiterals(applied, identifierRealToFake)
+  })
+
+  // Step 2: apply the mapping to prose text outside code blocks.
+  // Code blocks are already transformed — the real identifiers are gone from
+  // them so a second pass does not double-replace anything.
+  return applyMapping(withCodeObfuscated, mapping.realToFake)
 }
