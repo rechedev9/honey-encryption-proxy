@@ -18,6 +18,7 @@
  */
 
 import { createHmac } from 'node:crypto'
+import { logger } from '../logger.ts'
 import type { IdentifierMapping } from '../types.ts'
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
@@ -215,7 +216,10 @@ export function buildIdentifierMapping(
     // Log a warning but continue with the full set — truncating would
     // silently leak identifiers beyond the cap. This limit exists to
     // warn operators of abnormally large payloads.
-    console.warn(`[honey-proxy] Identifier count ${identifiers.size} exceeds cap ${MAX_IDENTIFIERS} — possible DoS payload`)
+    logger.warn('Identifier count exceeds cap — possible DoS payload', {
+      count: identifiers.size,
+      cap: MAX_IDENTIFIERS,
+    })
   }
 
   const sorted = [...identifiers].sort()

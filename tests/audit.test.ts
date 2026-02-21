@@ -119,6 +119,7 @@ describe('Audit logger', () => {
       expect((parsed.signature?.length ?? 0)).toBeGreaterThan(0)
     })
 
+    // SPHINCS+ keygen + 2 signatures in pure JS can exceed the default 5 s timeout
     it('different entries produce different signatures', async () => {
       const macKey = randomBytes(32)
       initAuditSigner(macKey)
@@ -131,6 +132,6 @@ describe('Audit logger', () => {
       const second = JSON.parse(lines[1] as string) as AuditEntry
 
       expect(first.signature).not.toBe(second.signature)
-    })
+    }, 15_000)
   })
 })
