@@ -102,7 +102,10 @@ describe('FPE identifier mapping', () => {
   describe('buildIdentifierMapping', () => {
     it('maps user-defined identifiers to fake ones', () => {
       const ids = new Set(['InvoiceProcessor', 'calculateTax', 'userProfile'])
-      const mapping = buildIdentifierMapping(ids, fpeKey)
+      const mappingResult = buildIdentifierMapping(ids, fpeKey)
+      expect(mappingResult.ok).toBe(true)
+      if (!mappingResult.ok) return
+      const mapping = mappingResult.value
 
       expect(mapping.realToFake.size).toBe(3)
       expect(mapping.fakeToReal.size).toBe(3)
@@ -110,8 +113,13 @@ describe('FPE identifier mapping', () => {
 
     it('is deterministic: same ids + key → same mapping', () => {
       const ids = new Set(['InvoiceProcessor', 'calculateTax'])
-      const m1 = buildIdentifierMapping(ids, fpeKey)
-      const m2 = buildIdentifierMapping(ids, fpeKey)
+      const m1Result = buildIdentifierMapping(ids, fpeKey)
+      const m2Result = buildIdentifierMapping(ids, fpeKey)
+      expect(m1Result.ok).toBe(true)
+      expect(m2Result.ok).toBe(true)
+      if (!m1Result.ok || !m2Result.ok) return
+      const m1 = m1Result.value
+      const m2 = m2Result.value
 
       expect(m1.realToFake.get('InvoiceProcessor')).toBe(m2.realToFake.get('InvoiceProcessor'))
       expect(m1.realToFake.get('calculateTax')).toBe(m2.realToFake.get('calculateTax'))
@@ -119,7 +127,10 @@ describe('FPE identifier mapping', () => {
 
     it('preserves PascalCase convention', () => {
       const ids = new Set(['InvoiceProcessor'])
-      const mapping = buildIdentifierMapping(ids, fpeKey)
+      const mappingResult = buildIdentifierMapping(ids, fpeKey)
+      expect(mappingResult.ok).toBe(true)
+      if (!mappingResult.ok) return
+      const mapping = mappingResult.value
       const fake = mapping.realToFake.get('InvoiceProcessor') ?? ''
 
       expect(/^[A-Z]/.test(fake)).toBe(true)
@@ -127,7 +138,10 @@ describe('FPE identifier mapping', () => {
 
     it('preserves camelCase convention', () => {
       const ids = new Set(['calculateTax'])
-      const mapping = buildIdentifierMapping(ids, fpeKey)
+      const mappingResult = buildIdentifierMapping(ids, fpeKey)
+      expect(mappingResult.ok).toBe(true)
+      if (!mappingResult.ok) return
+      const mapping = mappingResult.value
       const fake = mapping.realToFake.get('calculateTax') ?? ''
 
       expect(/^[a-z]/.test(fake)).toBe(true)
@@ -135,7 +149,10 @@ describe('FPE identifier mapping', () => {
 
     it('preserves snake_case convention', () => {
       const ids = new Set(['user_profile_data'])
-      const mapping = buildIdentifierMapping(ids, fpeKey)
+      const mappingResult = buildIdentifierMapping(ids, fpeKey)
+      expect(mappingResult.ok).toBe(true)
+      if (!mappingResult.ok) return
+      const mapping = mappingResult.value
       const fake = mapping.realToFake.get('user_profile_data') ?? ''
 
       expect(fake.includes('_')).toBe(true)
@@ -144,8 +161,13 @@ describe('FPE identifier mapping', () => {
     it('different keys produce different mappings', () => {
       const ids = new Set(['InvoiceProcessor'])
       const key2 = Buffer.alloc(32, 0x22)
-      const m1 = buildIdentifierMapping(ids, fpeKey)
-      const m2 = buildIdentifierMapping(ids, key2)
+      const m1Result = buildIdentifierMapping(ids, fpeKey)
+      const m2Result = buildIdentifierMapping(ids, key2)
+      expect(m1Result.ok).toBe(true)
+      expect(m2Result.ok).toBe(true)
+      if (!m1Result.ok || !m2Result.ok) return
+      const m1 = m1Result.value
+      const m2 = m2Result.value
 
       expect(m1.realToFake.get('InvoiceProcessor')).not.toBe(
         m2.realToFake.get('InvoiceProcessor'),
@@ -159,7 +181,10 @@ describe('FPE identifier mapping', () => {
         'ShippingCalculator', 'DiscountProvider', 'TaxResolver',
         'ReportGenerator',
       ])
-      const mapping = buildIdentifierMapping(ids, fpeKey)
+      const mappingResult = buildIdentifierMapping(ids, fpeKey)
+      expect(mappingResult.ok).toBe(true)
+      if (!mappingResult.ok) return
+      const mapping = mappingResult.value
       const fakes = [...mapping.realToFake.values()]
       const unique = new Set(fakes)
 
@@ -168,11 +193,23 @@ describe('FPE identifier mapping', () => {
 
     it('skips keywords even when passed in', () => {
       const ids = new Set(['const', 'return', 'InvoiceProcessor'])
-      const mapping = buildIdentifierMapping(ids, fpeKey)
+      const mappingResult = buildIdentifierMapping(ids, fpeKey)
+      expect(mappingResult.ok).toBe(true)
+      if (!mappingResult.ok) return
+      const mapping = mappingResult.value
 
       expect(mapping.realToFake.has('const')).toBe(false)
       expect(mapping.realToFake.has('return')).toBe(false)
       expect(mapping.realToFake.has('InvoiceProcessor')).toBe(true)
+    })
+
+    it('returns err when identifier count exceeds MAX_IDENTIFIERS (5000)', () => {
+      const ids = new Set<string>()
+      for (let i = 0; i < 5001; i++) {
+        ids.add(`identifier${String(i).padStart(5, '0')}`)
+      }
+      const result = buildIdentifierMapping(ids, fpeKey)
+      expect(result.ok).toBe(false)
     })
   })
 
@@ -180,7 +217,10 @@ describe('FPE identifier mapping', () => {
     it('round-trips code through apply + reverse', () => {
       const code = 'class InvoiceProcessor { calculateTax(amount: number) {} }'
       const ids = new Set(['InvoiceProcessor', 'calculateTax'])
-      const mapping = buildIdentifierMapping(ids, fpeKey)
+      const mappingResult = buildIdentifierMapping(ids, fpeKey)
+      expect(mappingResult.ok).toBe(true)
+      if (!mappingResult.ok) return
+      const mapping = mappingResult.value
 
       const obfuscated = applyMapping(code, mapping.realToFake)
       expect(obfuscated).not.toBe(code)
@@ -192,7 +232,10 @@ describe('FPE identifier mapping', () => {
     it('does not replace partial matches', () => {
       const code = 'const processData = () => processDataHelper()'
       const ids = new Set(['processData'])
-      const mapping = buildIdentifierMapping(ids, fpeKey)
+      const mappingResult = buildIdentifierMapping(ids, fpeKey)
+      expect(mappingResult.ok).toBe(true)
+      if (!mappingResult.ok) return
+      const mapping = mappingResult.value
 
       const obfuscated = applyMapping(code, mapping.realToFake)
       // processDataHelper must NOT be replaced (it is not in the mapping)
@@ -282,7 +325,10 @@ describe('obfuscateStringLiterals', () => {
 
   it('replaces a double-quoted string whose content exactly matches an identifier', () => {
     const ids = new Set(['invoiceId'])
-    const mapping = buildIdentifierMapping(ids, fpeKey)
+    const mappingResult = buildIdentifierMapping(ids, fpeKey)
+    expect(mappingResult.ok).toBe(true)
+    if (!mappingResult.ok) return
+    const mapping = mappingResult.value
     const code = 'db.query("invoiceId")'
     const result = obfuscateStringLiterals(code, mapping.realToFake)
     expect(result.includes('"invoiceId"')).toBe(false)
@@ -291,7 +337,10 @@ describe('obfuscateStringLiterals', () => {
 
   it('replaces a single-quoted string', () => {
     const ids = new Set(['PAYMENT_DUE'])
-    const mapping = buildIdentifierMapping(ids, fpeKey)
+    const mappingResult = buildIdentifierMapping(ids, fpeKey)
+    expect(mappingResult.ok).toBe(true)
+    if (!mappingResult.ok) return
+    const mapping = mappingResult.value
     const code = "const status = 'PAYMENT_DUE'"
     const result = obfuscateStringLiterals(code, mapping.realToFake)
     expect(result.includes("'PAYMENT_DUE'")).toBe(false)
@@ -299,14 +348,20 @@ describe('obfuscateStringLiterals', () => {
 
   it('leaves non-matching string literals unchanged', () => {
     const ids = new Set(['invoiceId'])
-    const mapping = buildIdentifierMapping(ids, fpeKey)
+    const mappingResult = buildIdentifierMapping(ids, fpeKey)
+    expect(mappingResult.ok).toBe(true)
+    if (!mappingResult.ok) return
+    const mapping = mappingResult.value
     const code = 'const msg = "hello world"'
     expect(obfuscateStringLiterals(code, mapping.realToFake)).toBe(code)
   })
 
   it('does not alter strings whose content is a partial match', () => {
     const ids = new Set(['invoice'])
-    const mapping = buildIdentifierMapping(ids, fpeKey)
+    const mappingResult = buildIdentifierMapping(ids, fpeKey)
+    expect(mappingResult.ok).toBe(true)
+    if (!mappingResult.ok) return
+    const mapping = mappingResult.value
     // "invoiceId" is not the same as "invoice"
     const code = 'const f = "invoiceId"'
     expect(obfuscateStringLiterals(code, mapping.realToFake)).toBe(code)
@@ -314,7 +369,10 @@ describe('obfuscateStringLiterals', () => {
 
   it('round-trips via reverseMapping', () => {
     const ids = new Set(['PAYMENT_DUE'])
-    const mapping = buildIdentifierMapping(ids, fpeKey)
+    const mappingResult = buildIdentifierMapping(ids, fpeKey)
+    expect(mappingResult.ok).toBe(true)
+    if (!mappingResult.ok) return
+    const mapping = mappingResult.value
     const code = 'if (status === "PAYMENT_DUE") throw new Error()'
     const obfuscated = obfuscateStringLiterals(code, mapping.realToFake)
     const restored = reverseMapping(obfuscated, mapping.fakeToReal)
@@ -406,7 +464,10 @@ describe('AST extraction — integration with obfuscateText', () => {
     // "PaymentGateway" is a string literal value — AST extraction excludes it.
     // Regex extraction would include it, causing the string to be obfuscated too.
     const text = '```typescript\nconst gateway = "PaymentGateway"\n```'
-    const { obfuscated } = obfuscateText(text, keyResult.value)
+    const obfResult = obfuscateText(text, keyResult.value)
+    expect(obfResult.ok).toBe(true)
+    if (!obfResult.ok) return
+    const { obfuscated } = obfResult.value
 
     // The string literal "PaymentGateway" must remain unchanged
     expect(obfuscated.includes('"PaymentGateway"')).toBe(true)
@@ -419,7 +480,10 @@ describe('AST extraction — integration with obfuscateText', () => {
 
     const text =
       '```typescript\nclass PaymentGateway { process() {} }\n```'
-    const { obfuscated } = obfuscateText(text, keyResult.value)
+    const obfResult = obfuscateText(text, keyResult.value)
+    expect(obfResult.ok).toBe(true)
+    if (!obfResult.ok) return
+    const { obfuscated } = obfResult.value
 
     // The class name in code position must be obfuscated
     expect(obfuscated.includes('PaymentGateway')).toBe(false)
@@ -432,7 +496,10 @@ describe('AST extraction — integration with obfuscateText', () => {
 
     const text =
       '```typescript\nclass InvoiceProcessor {\n  calculateTax(amount: number): number { return amount * 0.21 }\n}\n```'
-    const { obfuscated, mapping } = obfuscateText(text, keyResult.value)
+    const obfResult = obfuscateText(text, keyResult.value)
+    expect(obfResult.ok).toBe(true)
+    if (!obfResult.ok) return
+    const { obfuscated, mapping } = obfResult.value
 
     expect(obfuscated).not.toBe(text)
     expect(obfuscated.includes('InvoiceProcessor')).toBe(false)
@@ -449,7 +516,10 @@ describe('AST extraction — integration with obfuscateText', () => {
 
     const text =
       '```js\nfunction processOrder(orderId) { return orderId }\n```'
-    const { obfuscated, mapping } = obfuscateText(text, keyResult.value)
+    const obfResult = obfuscateText(text, keyResult.value)
+    expect(obfResult.ok).toBe(true)
+    if (!obfResult.ok) return
+    const { obfuscated, mapping } = obfResult.value
 
     expect(obfuscated.includes('processOrder')).toBe(false)
 
@@ -469,7 +539,10 @@ describe('obfuscateText / deobfuscateText', () => {
     const text =
       'Please review this:\n```typescript\nclass InvoiceProcessor {\n  calculateTax(amount: number): number { return amount * 0.2 }\n}\n```'
 
-    const { obfuscated, mapping } = obfuscateText(text, keyResult.value)
+    const obfResult = obfuscateText(text, keyResult.value)
+    expect(obfResult.ok).toBe(true)
+    if (!obfResult.ok) return
+    const { obfuscated, mapping } = obfResult.value
 
     expect(obfuscated).not.toBe(text)
     // Real class name must not appear in outgoing text
@@ -485,7 +558,10 @@ describe('obfuscateText / deobfuscateText', () => {
     if (!keyResult.ok) return
 
     const text = 'What is the meaning of life?'
-    const { obfuscated } = obfuscateText(text, keyResult.value)
+    const obfResult = obfuscateText(text, keyResult.value)
+    expect(obfResult.ok).toBe(true)
+    if (!obfResult.ok) return
+    const { obfuscated } = obfResult.value
 
     expect(obfuscated).toBe(text)
   })

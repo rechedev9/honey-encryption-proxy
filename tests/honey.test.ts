@@ -12,7 +12,7 @@
 
 import { describe, it, expect } from 'bun:test'
 import { randomBytes, createCipheriv, createHmac } from 'node:crypto'
-import { encrypt, decrypt, decryptHoney, FORMAT_VERSION, FORMAT_VERSION_V2 } from '../src/honey/engine.ts'
+import { encrypt, decrypt, decryptHoneyUnsafe, FORMAT_VERSION, FORMAT_VERSION_V2 } from '../src/honey/engine.ts'
 import { deriveSessionKey, deriveFromSalt } from '../src/honey/key-manager.ts'
 import { CORPUS_SIZE } from '../src/corpus/index.ts'
 import { encode as dteEncode, indexToBytes } from '../src/honey/dte-corpus.ts'
@@ -141,7 +141,7 @@ describe('HoneyEngine', () => {
       if (!encResult.ok) return
 
       const wrongKey = randomBytes(32)
-      const decoy = decryptHoney(encResult.value, wrongKey)
+      const decoy = decryptHoneyUnsafe(encResult.value, wrongKey)
 
       expect(typeof decoy).toBe('string')
       expect(decoy.length).toBeGreaterThan(0)
@@ -159,7 +159,7 @@ describe('HoneyEngine', () => {
       const decoys = new Set<string>()
       for (let i = 0; i < 20; i++) {
         const wrongKey = randomBytes(32)
-        decoys.add(decryptHoney(encResult.value, wrongKey))
+        decoys.add(decryptHoneyUnsafe(encResult.value, wrongKey))
       }
 
       // With 20 random keys and CORPUS_SIZE entries, we expect >1 distinct decoy
@@ -180,7 +180,7 @@ describe('HoneyEngine', () => {
       if (!decResult.ok) return
 
       const wrongKey = randomBytes(32)
-      const decoy = decryptHoney(encResult.value, wrongKey)
+      const decoy = decryptHoneyUnsafe(encResult.value, wrongKey)
 
       // Not guaranteed but overwhelmingly likely with random key
       if (CORPUS_SIZE > 1) {
@@ -188,7 +188,7 @@ describe('HoneyEngine', () => {
         let differs = false
         for (let i = 0; i < 10; i++) {
           const k = randomBytes(32)
-          if (decryptHoney(encResult.value, k) !== decResult.value) {
+          if (decryptHoneyUnsafe(encResult.value, k) !== decResult.value) {
             differs = true
             break
           }

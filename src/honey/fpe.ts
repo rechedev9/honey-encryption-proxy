@@ -18,11 +18,11 @@
  */
 
 import { createHmac } from 'node:crypto'
-import { logger } from '../logger.ts'
-import type { IdentifierMapping } from '../types.ts'
+import { ok, err } from '../types.ts'
+import type { IdentifierMapping, Result } from '../types.ts'
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
-// 256 common programming words (lowercase).  Mix of verbs, nouns, and modifiers
+// 267 common programming words (lowercase).  Mix of verbs, nouns, and modifiers
 // so every combination produces plausible identifier components.
 
 const VOCAB: readonly string[] = [
@@ -72,13 +72,11 @@ const VOCAB: readonly string[] = [
 // Verify at module load time that VOCAB contains no duplicates.
 // A duplicate reduces entropy and creates a statistical fingerprint in
 // the output distribution — caught here rather than silently degrading.
-if (process.env.NODE_ENV !== 'test') {
-  const vocabSet = new Set(VOCAB)
-  if (vocabSet.size !== VOCAB.length) {
-    throw new Error(
-      `VOCAB integrity violation: ${VOCAB.length} entries but only ${vocabSet.size} unique — fix duplicates in fpe.ts`,
-    )
-  }
+const vocabSet = new Set(VOCAB)
+if (vocabSet.size !== VOCAB.length) {
+  throw new Error(
+    `VOCAB integrity violation: ${VOCAB.length} entries but only ${vocabSet.size} unique — fix duplicates in fpe.ts`,
+  )
 }
 
 // ── Skip-list: identifiers that must not be renamed ───────────────────────────
@@ -206,20 +204,16 @@ const MAX_IDENTIFIERS = 5_000
 export function buildIdentifierMapping(
   identifiers: ReadonlySet<string>,
   fpeKey: Buffer,
-): IdentifierMapping {
+): Result<IdentifierMapping> {
   const realToFake = new Map<string, string>()
   const fakeToReal = new Map<string, string>()
 
   const usedFakes = new Set<string>()
 
   if (identifiers.size > MAX_IDENTIFIERS) {
-    // Log a warning but continue with the full set — truncating would
-    // silently leak identifiers beyond the cap. This limit exists to
-    // warn operators of abnormally large payloads.
-    logger.warn('Identifier count exceeds cap — possible DoS payload', {
-      count: identifiers.size,
-      cap: MAX_IDENTIFIERS,
-    })
+    return err(new Error(
+      `Identifier count ${identifiers.size} exceeds cap ${MAX_IDENTIFIERS} — possible DoS payload`,
+    ))
   }
 
   const sorted = [...identifiers].sort()
@@ -232,7 +226,7 @@ export function buildIdentifierMapping(
     usedFakes.add(fake)
   }
 
-  return { realToFake, fakeToReal }
+  return ok({ realToFake, fakeToReal })
 }
 
 // Sort by key-length descending so longer tokens replace first, preventing

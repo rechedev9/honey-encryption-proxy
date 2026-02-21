@@ -19,7 +19,8 @@ import {
   transformCodeBlocks,
   stripComments,
 } from './extractor.ts'
-import type { CodeBlock, IdentifierMapping, SessionKey } from '../types.ts'
+import { ok, err } from '../types.ts'
+import type { CodeBlock, IdentifierMapping, Result, SessionKey } from '../types.ts'
 
 export interface ObfuscationStats {
   readonly identifiersObfuscated: number
@@ -62,7 +63,7 @@ function collectFromBlocks(
  * Non-code text (prose) is left untouched so Claude can still understand
  * the question context.
  */
-export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
+export function obfuscateText(text: string, sessionKey: SessionKey): Result<MapResult> {
   const blocks = extractCodeBlocks(text)
 
   if (blocks.length === 0) {
@@ -70,11 +71,11 @@ export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
       realToFake: new Map(),
       fakeToReal: new Map(),
     }
-    return {
+    return ok({
       obfuscated: text,
       mapping: emptyMapping,
       stats: { identifiersObfuscated: 0, numbersObfuscated: 0 },
-    }
+    })
   }
 
   // 1. Strip comments before extraction so comment words are never collected
@@ -84,7 +85,11 @@ export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
   collectFromBlocks(blocks, identifiers, strippedParts)
 
   // 2. Build identifier and numeric mappings, then merge them.
-  const identifierMapping = buildIdentifierMapping(identifiers, sessionKey.fpeKey)
+  const identifierMappingResult = buildIdentifierMapping(identifiers, sessionKey.fpeKey)
+  if (!identifierMappingResult.ok) {
+    return err(identifierMappingResult.error)
+  }
+  const identifierMapping = identifierMappingResult.value
   const numericMapping = buildNumericMapping(strippedParts.join('\n'), sessionKey.fpeKey)
 
   const fullMapping: IdentifierMapping = {
@@ -109,7 +114,7 @@ export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
     numbersObfuscated: numericMapping.realToFake.size,
   }
 
-  return { obfuscated, mapping: fullMapping, stats }
+  return ok({ obfuscated, mapping: fullMapping, stats })
 }
 
 /**
@@ -134,11 +139,11 @@ export function deobfuscateText(text: string, mapping: IdentifierMapping): strin
 export function buildGlobalMapping(
   texts: readonly string[],
   sessionKey: SessionKey,
-): {
+): Result<{
   readonly mapping: IdentifierMapping
   readonly identifierRealToFake: ReadonlyMap<string, string>
   readonly stats: ObfuscationStats
-} {
+}> {
   const allIdentifiers = new Set<string>()
   const allStripped: string[] = []
 
@@ -146,7 +151,11 @@ export function buildGlobalMapping(
     collectFromBlocks(extractCodeBlocks(text), allIdentifiers, allStripped)
   }
 
-  const identifierMapping = buildIdentifierMapping(allIdentifiers, sessionKey.fpeKey)
+  const identifierMappingResult = buildIdentifierMapping(allIdentifiers, sessionKey.fpeKey)
+  if (!identifierMappingResult.ok) {
+    return err(identifierMappingResult.error)
+  }
+  const identifierMapping = identifierMappingResult.value
   const numericMapping = buildNumericMapping(allStripped.join('\n'), sessionKey.fpeKey)
 
   const realToFake = new Map<string, string>([
@@ -158,14 +167,14 @@ export function buildGlobalMapping(
     ...numericMapping.fakeToReal,
   ])
 
-  return {
+  return ok({
     mapping: { realToFake, fakeToReal },
     identifierRealToFake: identifierMapping.realToFake,
     stats: {
       identifiersObfuscated: identifierMapping.realToFake.size,
       numbersObfuscated: numericMapping.realToFake.size,
     },
-  }
+  })
 }
 
 /**

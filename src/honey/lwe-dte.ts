@@ -10,7 +10,7 @@
  *   Honey:   wrong s' ⟹ a·(s−s') ≈ uniform(Z_q) ⟹ index ≈ uniform({0,...,M−1})
  *
  * Parameters:
- *   n = 16    — vector dimension
+ *   n = 128   — vector dimension (demo-grade; production LWE uses n≥512)
  *   q = 7681  — prime modulus  (log₂q ≈ 13)
  *   B = 5     — error bound    |e| ≤ 5 << ⌊q/M⌋/2 ≈ 76 ✓
  *   M         — corpus size    (~50)
@@ -21,8 +21,10 @@ import { CORPUS_SIZE } from '../corpus/index.ts'
 
 // ── LWE parameters ───────────────────────────────────────────────────────────
 
-const LWE_N = 16           // vector dimension
+const LWE_N = 128          // vector dimension (demo-grade; production LWE uses n≥512)
 const LWE_Q = 7681        // prime modulus; ⌊q/M⌋ ≈ 153 for M≈50
+/** Rejection limit: largest multiple of LWE_Q that fits in uint32. */
+const REJECTION_LIMIT = Math.floor(4294967296 / LWE_Q) * LWE_Q
 const LWE_B = 5           // error bound; |e| ≤ B << ⌊q/M⌋/2 ≈ 76
 const NONCE_BYTES = 16    // bytes of randomness for each LWE encryption
 
@@ -40,9 +42,9 @@ function dotMod(a: readonly number[], s: readonly number[]): number {
   return sum
 }
 
-/** Samples an error e ∈ [−B, B] from a deterministic HMAC. */
-function sampleError(nonce: Buffer, index: number): number {
-  const h = createHmac('sha256', nonce).update(`lwe:e:${index}`).digest()
+/** Samples an error e ∈ [−B, B] deterministically from HMAC(secretKey, nonce || index). */
+function sampleError(secretKey: Buffer, nonce: Buffer, index: number): number {
+  const h = createHmac('sha256', secretKey).update(nonce).update(`lwe:e:${index}`).digest()
   const raw = (h.readUInt32BE(0)) % (2 * LWE_B + 1)
   return raw - LWE_B
 }
@@ -56,8 +58,14 @@ function sampleError(nonce: Buffer, index: number): number {
 function deriveSecretVector(fpeKey: Buffer): readonly number[] {
   const s: number[] = []
   for (let i = 0; i < LWE_N; i++) {
-    const h = createHmac('sha256', fpeKey).update(`lwe:s:${i}`).digest()
-    s.push(h.readUInt32BE(0) % LWE_Q)
+    for (let attempt = 0; ; attempt++) {
+      const h = createHmac('sha256', fpeKey).update(`lwe:s:${i}:${attempt}`).digest()
+      const raw = h.readUInt32BE(0)
+      if (raw < REJECTION_LIMIT) {
+        s.push(raw % LWE_Q)
+        break
+      }
+    }
   }
   return s
 }
@@ -69,8 +77,14 @@ function deriveSecretVector(fpeKey: Buffer): readonly number[] {
 function derivePublicVector(key: Buffer, nonce: Buffer): readonly number[] {
   const a: number[] = []
   for (let i = 0; i < LWE_N; i++) {
-    const h = createHmac('sha256', key).update(nonce).update(`lwe:a:${i}`).digest()
-    a.push(h.readUInt32BE(0) % LWE_Q)
+    for (let attempt = 0; ; attempt++) {
+      const h = createHmac('sha256', key).update(nonce).update(`lwe:a:${i}:${attempt}`).digest()
+      const raw = h.readUInt32BE(0)
+      if (raw < REJECTION_LIMIT) {
+        a.push(raw % LWE_Q)
+        break
+      }
+    }
   }
   return a
 }
@@ -91,7 +105,7 @@ export function lweEncrypt(index: number, key: Buffer, fpeKey: Buffer): LweEncry
   const nonce = randomBytes(NONCE_BYTES)
   const a = derivePublicVector(key, nonce)
   const s = deriveSecretVector(fpeKey)
-  const e = sampleError(nonce, 0)
+  const e = sampleError(fpeKey, nonce, 0)
   const normalised = ((index % M) + M) % M
   const b = ((dotMod(a, s) + e + scale * normalised) % LWE_Q + LWE_Q) % LWE_Q
   return { nonce, b }

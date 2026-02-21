@@ -119,6 +119,44 @@ describe('Audit logger', () => {
       expect((parsed.signature?.length ?? 0)).toBeGreaterThan(0)
     })
 
+    it('produces identical signatures regardless of property insertion order', async () => {
+      const macKey = randomBytes(32)
+      initAuditSigner(macKey)
+
+      // Create two entries with identical values but different property insertion order
+      const entry1: AuditEntry = {
+        timestamp: '2026-01-01T00:00:00.000Z',
+        requestId: 'req-canon-1',
+        sessionId: 'session-canon',
+        identifiersObfuscated: 3,
+        numbersObfuscated: 1,
+        durationMs: 50,
+        streaming: false,
+        upstreamStatus: 200,
+      }
+
+      // Same values, different property order
+      const entry2: AuditEntry = {
+        upstreamStatus: 200,
+        streaming: false,
+        durationMs: 50,
+        numbersObfuscated: 1,
+        identifiersObfuscated: 3,
+        sessionId: 'session-canon',
+        requestId: 'req-canon-1',
+        timestamp: '2026-01-01T00:00:00.000Z',
+      }
+
+      await writeAuditEntry(entry1)
+      await writeAuditEntry(entry2)
+
+      const lines = readFileSync(auditFile, 'utf-8').trim().split('\n')
+      const first = JSON.parse(lines[0]!) as AuditEntry
+      const second = JSON.parse(lines[1]!) as AuditEntry
+
+      expect(first.signature).toBe(second.signature)
+    }, 15_000)
+
     // SPHINCS+ keygen + 2 signatures in pure JS can exceed the default 5 s timeout
     it('different entries produce different signatures', async () => {
       const macKey = randomBytes(32)

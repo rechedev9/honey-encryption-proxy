@@ -114,9 +114,28 @@ export async function writeAuditEntry(entry: AuditEntry): Promise<void> {
   }
 }
 
+/**
+ * Produces a canonical JSON representation of an audit entry for signing.
+ * Fields are serialized in a fixed, alphabetical order, and the signature
+ * fields themselves are excluded so that signing is idempotent.
+ */
+function canonicalizeEntry(entry: AuditEntry): string {
+  const ordered: Record<string, unknown> = {
+    durationMs: entry.durationMs,
+    identifiersObfuscated: entry.identifiersObfuscated,
+    numbersObfuscated: entry.numbersObfuscated,
+    requestId: entry.requestId,
+    sessionId: entry.sessionId,
+    streaming: entry.streaming,
+    timestamp: entry.timestamp,
+    upstreamStatus: entry.upstreamStatus,
+  }
+  return JSON.stringify(ordered)
+}
+
 /** Signs an audit entry with SLH-DSA-SHA2-128s and returns a new entry with the signature fields. */
 function signEntry(entry: AuditEntry, secretKey: Uint8Array): AuditEntry {
-  const msgBytes = Buffer.from(JSON.stringify(entry))
+  const msgBytes = Buffer.from(canonicalizeEntry(entry))
   const sig = slh_dsa_sha2_128s.sign(secretKey, msgBytes)
   return {
     ...entry,

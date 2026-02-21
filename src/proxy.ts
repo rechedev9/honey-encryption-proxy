@@ -27,7 +27,8 @@ import { logger, setLogLevel } from './logger.ts'
 import { writeAuditEntry, initAuditSigner } from './audit.ts'
 import { StreamDeobfuscator } from './stream-deobfuscator.ts'
 import { initTreeSitter } from './ast/tree-sitter.ts'
-import type { AuditEntry, IdentifierMapping } from './types.ts'
+import { ok, err } from './types.ts'
+import type { AuditEntry, IdentifierMapping, Result } from './types.ts'
 
 // ── Config ───────────────────────────────────────────────────────────────────────────
 
@@ -212,7 +213,7 @@ function applyMappingToContent(
   })
 }
 
-function obfuscateMessages(messages: unknown[]): ObfuscateResult {
+function obfuscateMessages(messages: unknown[]): Result<ObfuscateResult> {
   const emptyMapping: IdentifierMapping = {
     realToFake: new Map(),
     fakeToReal: new Map(),
@@ -230,10 +231,14 @@ function obfuscateMessages(messages: unknown[]): ObfuscateResult {
   // Step 2: build one global mapping from code blocks across ALL messages.
   // This ensures assistant messages with no code blocks still get their
   // prose obfuscated using identifiers extracted from user messages.
-  const { mapping, identifierRealToFake, stats } = buildGlobalMapping(allTexts, SESSION_KEY)
+  const globalResult = buildGlobalMapping(allTexts, SESSION_KEY)
+  if (!globalResult.ok) {
+    return err(globalResult.error)
+  }
+  const { mapping, identifierRealToFake, stats } = globalResult.value
 
   if (mapping.realToFake.size === 0) {
-    return { messages, mapping: emptyMapping, stats }
+    return ok({ messages, mapping: emptyMapping, stats })
   }
 
   logger.debug('Built global mapping', {
@@ -252,7 +257,7 @@ function obfuscateMessages(messages: unknown[]): ObfuscateResult {
     return msg
   })
 
-  return { messages: obfuscated, mapping, stats }
+  return ok({ messages: obfuscated, mapping, stats })
 }
 
 async function forwardRequest(
@@ -319,7 +324,15 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     return new Response('Bad Request: messages must be an array', { status: 400 })
   }
 
-  const { messages: obfuscatedMessages, mapping, stats } = obfuscateMessages(messages)
+  const obfuscateResult = obfuscateMessages(messages)
+  if (!obfuscateResult.ok) {
+    logger.warn('Identifier cap exceeded — rejecting request', {
+      requestId,
+      error: obfuscateResult.error.message,
+    })
+    return new Response('Request Entity Too Large', { status: 413 })
+  }
+  const { messages: obfuscatedMessages, mapping, stats } = obfuscateResult.value
 
   const mappingSize = mapping.realToFake.size
   if (mappingSize > 0) {
@@ -461,6 +474,14 @@ const server = Bun.serve({
     if (upstreamUrl === null) {
       logger.error('Passthrough URL origin mismatch')
       return new Response('Internal Server Error', { status: 500 })
+    }
+
+    // Enforce body size limit on passthrough routes with bodies
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const contentLength = req.headers.get('content-length')
+      if (contentLength !== null && parseInt(contentLength, 10) > MAX_BODY_BYTES) {
+        return new Response('Request Entity Too Large', { status: 413 })
+      }
     }
 
     return await fetch(upstreamUrl.toString(), {

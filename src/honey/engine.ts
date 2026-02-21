@@ -93,18 +93,18 @@ export function decrypt(payload: EncryptedPayload, sessionKey: SessionKey): Resu
  * Demonstrates the honey property: decrypting with a wrong key always
  * produces a plausible (but different) code snippet.
  *
- * @internal Intentionally skips HMAC verification. Use ONLY for testing
- * and demonstration of the honey-encryption security property. MUST NOT
- * be called in any request-processing path.
+ * @warning UNSAFE — Intentionally skips HMAC verification. Use ONLY for
+ * testing and demonstration of the honey-encryption security property.
+ * MUST NOT be called in any request-processing path.
  */
-export function decryptHoney(payload: EncryptedPayload, wrongKey: Buffer): string {
+export function decryptHoneyUnsafe(payload: EncryptedPayload, wrongKey: Buffer): string {
   const raw = Buffer.from(payload.encoded, 'base64url')
 
   if (raw.length > 0) {
     const version = raw[0] ?? 0
 
     if (version === FORMAT_VERSION_V2) {
-      return decryptHoneyV2(raw, wrongKey)
+      return decryptHoneyV2Unsafe(raw, wrongKey)
     }
 
     if (version === FORMAT_VERSION) {
@@ -151,7 +151,7 @@ function decryptV2(raw: Buffer, sessionKey: SessionKey): Result<string> {
   return ok(dteDecode(index))
 }
 
-function decryptHoneyV2(raw: Buffer, wrongKey: Buffer): string {
+function decryptHoneyV2Unsafe(raw: Buffer, wrongKey: Buffer): string {
   // Layout: 0x02 || HMAC(32) || nonce(16) || b_uint16BE(2)
   const offset = 1
   const minLen = offset + TAG_BYTES + NONCE_BYTES + B_BYTES

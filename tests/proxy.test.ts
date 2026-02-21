@@ -27,7 +27,10 @@ describe('Proxy message pipeline', () => {
       const userMsg =
         'Here is my code:\n```typescript\nclass PaymentGatewayService {\n  processRefund(orderId: string): boolean { return true }\n}\n```\nCan you improve it?'
 
-      const { obfuscated, mapping } = obfuscateText(userMsg, key)
+      const obfResult = obfuscateText(userMsg, key)
+      expect(obfResult.ok).toBe(true)
+      if (!obfResult.ok) return
+      const { obfuscated, mapping } = obfResult.value
 
       expect(obfuscated.includes('PaymentGatewayService')).toBe(false)
       expect(obfuscated.includes('processRefund')).toBe(false)
@@ -44,7 +47,10 @@ describe('Proxy message pipeline', () => {
       const key = makeKey()
       const code = '```ts\nif (userAccount.isActive) { return UserStatus.Active }\n```'
 
-      const { obfuscated } = obfuscateText(code, key)
+      const obfResult = obfuscateText(code, key)
+      expect(obfResult.ok).toBe(true)
+      if (!obfResult.ok) return
+      const { obfuscated } = obfResult.value
 
       // Structural syntax is preserved
       expect(obfuscated.includes('if (')).toBe(true)
@@ -65,7 +71,10 @@ describe('Proxy message pipeline', () => {
         '```',
       ].join('\n')
 
-      const { obfuscated, mapping } = obfuscateText(text, key)
+      const obfResult = obfuscateText(text, key)
+      expect(obfResult.ok).toBe(true)
+      if (!obfResult.ok) return
+      const { obfuscated, mapping } = obfResult.value
 
       expect(obfuscated.includes('OrderValidator')).toBe(false)
       expect(obfuscated.includes('ShipmentProcessor')).toBe(false)
@@ -80,9 +89,12 @@ describe('Proxy message pipeline', () => {
 
       const r1 = obfuscateText(text, key)
       const r2 = obfuscateText(text, key)
+      expect(r1.ok).toBe(true)
+      expect(r2.ok).toBe(true)
+      if (!r1.ok || !r2.ok) return
 
       // Same key → same fake identifiers
-      expect(r1.obfuscated).toBe(r2.obfuscated)
+      expect(r1.value.obfuscated).toBe(r2.value.obfuscated)
     })
   })
 
@@ -91,7 +103,10 @@ describe('Proxy message pipeline', () => {
       const key = makeKey()
       const original = '```ts\nclass InvoiceService { generatePdf(): Buffer {} }\n```'
 
-      const { mapping } = obfuscateText(original, key)
+      const obfResult = obfuscateText(original, key)
+      expect(obfResult.ok).toBe(true)
+      if (!obfResult.ok) return
+      const { mapping } = obfResult.value
 
       // Simulate Claude echoing the fake names in its response
       const fakeClassName = mapping.realToFake.get('InvoiceService') ?? 'InvoiceService'
@@ -116,7 +131,10 @@ describe('Proxy message pipeline', () => {
       const key = makeKey()
       const text = '```typescript\n// VAT rate — confidential\nconst vatRate = 0.21\n```'
 
-      const { obfuscated } = obfuscateText(text, key)
+      const obfResult = obfuscateText(text, key)
+      expect(obfResult.ok).toBe(true)
+      if (!obfResult.ok) return
+      const { obfuscated } = obfResult.value
 
       expect(obfuscated.includes('VAT rate')).toBe(false)
       expect(obfuscated.includes('confidential')).toBe(false)
@@ -127,7 +145,10 @@ describe('Proxy message pipeline', () => {
       const text =
         '```typescript\nconst vatRate = 0.21\nconst paymentTerms = 365\n```'
 
-      const { obfuscated } = obfuscateText(text, key)
+      const obfResult = obfuscateText(text, key)
+      expect(obfResult.ok).toBe(true)
+      if (!obfResult.ok) return
+      const { obfuscated } = obfResult.value
 
       expect(obfuscated.includes('0.21')).toBe(false)
       expect(obfuscated.includes('365')).toBe(false)
@@ -138,7 +159,10 @@ describe('Proxy message pipeline', () => {
       const text =
         '```typescript\nconst vatRate = 0.21\nconst paymentTerms = 365\n```'
 
-      const { obfuscated, mapping } = obfuscateText(text, key)
+      const obfResult = obfuscateText(text, key)
+      expect(obfResult.ok).toBe(true)
+      if (!obfResult.ok) return
+      const { obfuscated, mapping } = obfResult.value
       const restored = deobfuscateText(obfuscated, mapping)
 
       expect(restored).toBe(text)
@@ -153,9 +177,12 @@ describe('Proxy message pipeline', () => {
 
       const userResult = obfuscateText(userText, key)
       const assistantResult = obfuscateText(assistantText, key)
+      expect(userResult.ok).toBe(true)
+      expect(assistantResult.ok).toBe(true)
+      if (!userResult.ok || !assistantResult.ok) return
 
-      expect(userResult.mapping.realToFake.get('PaymentProcessor')).toBe(
-        assistantResult.mapping.realToFake.get('PaymentProcessor'),
+      expect(userResult.value.mapping.realToFake.get('PaymentProcessor')).toBe(
+        assistantResult.value.mapping.realToFake.get('PaymentProcessor'),
       )
     })
   })
@@ -171,8 +198,11 @@ describe('Proxy message pipeline', () => {
 
       const r1 = obfuscateText(text, key1Result.value)
       const r2 = obfuscateText(text, key2Result.value)
+      expect(r1.ok).toBe(true)
+      expect(r2.ok).toBe(true)
+      if (!r1.ok || !r2.ok) return
 
-      expect(r1.obfuscated).not.toBe(r2.obfuscated)
+      expect(r1.value.obfuscated).not.toBe(r2.value.obfuscated)
     })
 
     it('obfuscated output does not contain real identifier in code block', () => {
@@ -191,7 +221,10 @@ describe('Proxy message pipeline', () => {
       ]
       const text = '```typescript\n' + codeLines.join('\n') + '\n```'
 
-      const { obfuscated } = obfuscateText(text, key)
+      const obfResult = obfuscateText(text, key)
+      expect(obfResult.ok).toBe(true)
+      if (!obfResult.ok) return
+      const { obfuscated } = obfResult.value
 
       for (const name of sensitiveNames) {
         expect(obfuscated.includes(name)).toBe(false)
