@@ -12,7 +12,7 @@ A Honey Encryption proxy for Claude Code. It sits between the Claude Code CLI an
 |---|---|
 | Run proxy | `ANTHROPIC_API_KEY=sk-ant-... HONEY_PASSPHRASE=secret bun run src/proxy.ts` |
 | Type check | `bun run typecheck` |
-| Tests (all 96) | `bun test` |
+| Tests (all 147) | `bun test` |
 | Single test file | `bun test tests/honey.test.ts` |
 | CI (typecheck + tests) | `bun run ci` |
 | Build | `bun build src/proxy.ts --outdir dist --target bun` |
@@ -32,9 +32,9 @@ Claude Code ← Proxy ← [deobfuscate response] ← Anthropic
 
 1. **Key derivation** (`src/honey/key-manager.ts`) — scrypt(N=65536, r=8, p=1) + HKDF produces three independent 32-byte sub-keys (`fpeKey`, `key`, `macKey`) from a single passphrase. Optional ML-KEM-768 hybrid key strengthening via `HONEY_KYBER_CAPSULE` env var. Fresh 32-byte random salt per proxy start (forward secrecy).
 
-2. **FPE** (`src/honey/fpe.ts`) — HMAC-SHA256 maps each identifier word to a 256-word vocabulary. Convention-preserving (camelCase→camelCase, snake_case→snake_case). Numeric literals get HMAC-derived scale factors. String literals with identifier values get exact-match replacement. Collision avoidance via up to 16 retry offsets.
+2. **FPE** (`src/honey/fpe.ts`) — HMAC-SHA256 maps each identifier word to a 267-word vocabulary. Convention-preserving (camelCase→camelCase, snake_case→snake_case). Numeric literals get HMAC-derived scale factors. String literals with identifier values get exact-match replacement. Collision avoidance via up to 16 retry offsets.
 
-3. **Honey Encryption engine** (`src/honey/engine.ts` + `src/honey/lwe-dte.ts` + `src/honey/dte-corpus.ts`) — v2 LWE-DTE + HMAC (default), with v1/v0 AES-256-CTR backward compat. LWE params: n=16, q=7681, B=5. The DTE maps code→corpus index via HMAC. **Not used in the proxy pipeline** — exists to demonstrate/test the honey property and for future secure storage of mappings. Claude receives FPE'd code, not ciphertext.
+3. **Honey Encryption engine** (`src/honey/engine.ts` + `src/honey/lwe-dte.ts` + `src/honey/dte-corpus.ts`) — v2 LWE-DTE + HMAC (default), with v1/v0 AES-256-CTR backward compat. LWE params: n=128, q=7681, B=5 (demo-grade; production uses n≥512). Rejection sampling eliminates modular bias in vector derivation. The DTE maps code→corpus index via HMAC. **Not used in the proxy pipeline** — exists to demonstrate/test the honey property and for future secure storage of mappings. Claude receives FPE'd code, not ciphertext.
 
 ### Obfuscation pipeline (`src/ast/mapper.ts` orchestrates)
 
@@ -52,9 +52,9 @@ All via env vars. Required: `ANTHROPIC_API_KEY`, `HONEY_PASSPHRASE`. Optional: `
 
 ## Key Patterns
 
-- **`Result<T, E>`** in `src/types.ts` — used for all fallible operations (`ok(value)` / `err(error)`). Check `.ok` before accessing `.value`.
+- **`Result<T, E>`** in `src/types.ts` — used for all fallible operations (`ok(value)` / `err(error)`). Check `.ok` before accessing `.value`. Propagated through `buildIdentifierMapping` → `obfuscateText` / `buildGlobalMapping` → `obfuscateMessages`; proxy returns HTTP 413 when the identifier cap (5 000) is exceeded.
 - **Structured JSON logger** (`src/logger.ts`) — use `logger.debug/info/warn/error()`, never `console.log`.
-- **Audit trail** (`src/audit.ts`) — fire-and-forget JSONL to `~/.honey-proxy/audit.jsonl`. Metadata only, never real/fake names. Signed with SLH-DSA-SHA2-128s (SPHINCS+) for post-quantum tamper evidence.
+- **Audit trail** (`src/audit.ts`) — fire-and-forget JSONL to `~/.honey-proxy/audit.jsonl`. Metadata only, never real/fake names. Signed with SLH-DSA-SHA2-128s (SPHINCS+) over a canonical JSON representation (alphabetical field order, signature fields excluded) for deterministic tamper evidence.
 - **ML-KEM-768 public key** — logged at startup for external encapsulation; hybrid key strengthening via `HONEY_KYBER_CAPSULE`.
 - **`ReadonlyMap` / `ReadonlySet`** everywhere for identifier mappings — mutations happen only during construction.
 
@@ -64,6 +64,8 @@ All via env vars. Required: `ANTHROPIC_API_KEY`, `HONEY_PASSPHRASE`. Optional: `
 - **Regex `lastIndex` reset**: All module-level RegExp objects with the `g` flag need `lastIndex = 0` before use (already done, but maintain this pattern).
 - **Identifier skip-list** in `fpe.ts`: JS/TS keywords and builtins are excluded from obfuscation. Update `SKIP_WORDS` if adding support for new languages.
 - **Numeric FPE skip rules**: Trivial numbers (0–256), HTTP status codes (explicit set), and calendar years (1900–2100) are never obfuscated.
+- **`decryptHoneyUnsafe`** in `engine.ts`: skips HMAC — test/demo only, never in request path.
+- **Passthrough body limit**: Non-GET/HEAD passthrough routes reject `Content-Length` > 10 MiB with 413.
 
 ## Phase Roadmap
 
