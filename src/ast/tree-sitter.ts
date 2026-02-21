@@ -92,15 +92,17 @@ export async function initTreeSitter(): Promise<Result<void>> {
     await Parser.init({ wasmBinary })
 
     const parser = new Parser()
-    const langEntries: Array<[SupportedLang, Parser.Language]> = []
     const langs: readonly SupportedLang[] = ['typescript', 'javascript', 'tsx']
 
-    for (const lang of langs) {
-      const bytes = new Uint8Array(await Bun.file(grammarWasmPath(lang)).arrayBuffer())
-      // 0.20.x API: Parser.Language.load() instead of Language.load()
-      const language = await Parser.Language.load(bytes)
-      langEntries.push([lang, language])
-    }
+    // Load all grammars concurrently for faster startup
+    const langEntries = await Promise.all(
+      langs.map(async (lang): Promise<[SupportedLang, Parser.Language]> => {
+        const bytes = new Uint8Array(await Bun.file(grammarWasmPath(lang)).arrayBuffer())
+        // 0.20.x API: Parser.Language.load() instead of Language.load()
+        const language = await Parser.Language.load(bytes)
+        return [lang, language]
+      }),
+    )
 
     state = {
       parser,

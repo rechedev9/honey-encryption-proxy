@@ -3,7 +3,7 @@
  * Replaces console.log in production code per project conventions.
  */
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 interface LogEntry {
   readonly level: LogLevel

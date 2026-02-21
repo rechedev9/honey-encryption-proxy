@@ -235,31 +235,30 @@ export function buildIdentifierMapping(
   return { realToFake, fakeToReal }
 }
 
+// Sort by key-length descending so longer tokens replace first, preventing
+// partial-replacement of shorter sub-strings that appear within longer ones.
+function replaceAllTokens(text: string, mapping: ReadonlyMap<string, string>): string {
+  let result = text
+  const entries = [...mapping.entries()].sort((a, b) => b[0].length - a[0].length)
+  for (const [from, to] of entries) {
+    result = result.replace(new RegExp(`\\b${escapeRegex(from)}\\b`, 'g'), to)
+  }
+  return result
+}
+
 /**
  * Applies the real→fake mapping to a code string.
  * Replaces only whole-word occurrences to avoid partial matches.
  */
 export function applyMapping(code: string, realToFake: ReadonlyMap<string, string>): string {
-  let result = code
-  // Sort by length descending so longer identifiers replace first (avoids
-  // partial-replacement of shorter sub-strings that appear within longer ones).
-  const entries = [...realToFake.entries()].sort((a, b) => b[0].length - a[0].length)
-  for (const [real, fake] of entries) {
-    result = result.replace(new RegExp(`\\b${escapeRegex(real)}\\b`, 'g'), fake)
-  }
-  return result
+  return replaceAllTokens(code, realToFake)
 }
 
 /**
  * Applies the fake→real mapping to a response string (reverse pass).
  */
 export function reverseMapping(text: string, fakeToReal: ReadonlyMap<string, string>): string {
-  let result = text
-  const entries = [...fakeToReal.entries()].sort((a, b) => b[0].length - a[0].length)
-  for (const [fake, real] of entries) {
-    result = result.replace(new RegExp(`\\b${escapeRegex(fake)}\\b`, 'g'), real)
-  }
-  return result
+  return replaceAllTokens(text, fakeToReal)
 }
 
 function escapeRegex(s: string): string {
@@ -321,6 +320,20 @@ const HTTP_STATUS_CODES: ReadonlySet<number> = new Set([
 
 const NUM_REGEX = /\b(\d+\.?\d*)\b/g
 
+/** Derives a fake numeric value from `u32` while preserving float/int form. */
+function numericCandidate(numVal: number, isFloat: boolean, decimals: number, u32: number): string {
+  if (isFloat) {
+    // Scale by a factor in [0.5, 1.5)
+    return (numVal * (0.5 + u32 / 4294967296)).toFixed(decimals)
+  }
+  // Keep the same order of magnitude
+  const n = Math.round(numVal)
+  const order = n <= 0 ? 0 : Math.max(0, Math.floor(Math.log10(n)))
+  const min = Math.pow(10, order)
+  const max = Math.pow(10, order + 1) - 1
+  return String(min + (u32 % (max - min + 1)))
+}
+
 /**
  * Scans `code` for numeric literals and builds a deterministic fake-number
  * mapping.  Skips:
@@ -366,21 +379,7 @@ export function buildNumericMapping(code: string, fpeKey: Buffer): IdentifierMap
     for (let offset = 0; offset < 16; offset++) {
       const hash = createHmac('sha256', fpeKey).update(`num:${numStr}:${offset}`).digest()
       const u32 = hash.readUInt32BE(0)
-
-      let candidate: string
-      if (isFloat) {
-        // Scale by a factor in [0.5, 1.5)
-        const factor = 0.5 + u32 / 4294967296
-        candidate = (numVal * factor).toFixed(decimals)
-      } else {
-        // Keep the same order of magnitude
-        const n = Math.round(numVal)
-        const order = n <= 0 ? 0 : Math.max(0, Math.floor(Math.log10(n)))
-        const min = Math.pow(10, order)
-        const max = Math.pow(10, order + 1) - 1
-        candidate = String(min + (u32 % (max - min + 1)))
-      }
-
+      const candidate = numericCandidate(numVal, isFloat, decimals, u32)
       if (candidate !== numStr && !usedFakes.has(candidate)) {
         fakeStr = candidate
         break
@@ -388,11 +387,12 @@ export function buildNumericMapping(code: string, fpeKey: Buffer): IdentifierMap
     }
 
     if (fakeStr === null) {
-      // Fallback: use a deterministic large offset
+      // Fallback: use a deterministic large offset. Integer fallback intentionally
+      // uses a different formula (+1000 range) to guarantee a distinct value.
       const hash = createHmac('sha256', fpeKey).update(`num:${numStr}:fallback`).digest()
       const u32 = hash.readUInt32BE(0)
       fakeStr = isFloat
-        ? (numVal * (0.5 + u32 / 4294967296)).toFixed(decimals)
+        ? numericCandidate(numVal, isFloat, decimals, u32)
         : String(Math.round(numVal) + 1000 + (u32 % 9000))
     }
 

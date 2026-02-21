@@ -57,37 +57,28 @@ export function stripComments(code: string): string {
 const FENCE_REGEX_BACKTICK = new RegExp('^```([^\\n`]*)\\n([\\s\\S]*?)^```', 'gm')
 const FENCE_REGEX_TILDE = new RegExp('^~~~([^\\n~]*)\\n([\\s\\S]*?)^~~~', 'gm')
 
+function extractFencedBlocks(text: string, regex: RegExp, out: CodeBlock[]): void {
+  regex.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(text)) !== null) {
+    out.push({
+      lang: (match[1] ?? '').trim(),
+      content: match[2] ?? '',
+      startOffset: match.index,
+      endOffset: match.index + match[0].length,
+    })
+  }
+}
+
 /**
  * Extracts all fenced code blocks from a markdown/prompt string.
  * Returns them in document order.
  */
 export function extractCodeBlocks(text: string): CodeBlock[] {
   const blocks: CodeBlock[] = []
-  let match: RegExpExecArray | null
-
-  FENCE_REGEX_BACKTICK.lastIndex = 0
-  while ((match = FENCE_REGEX_BACKTICK.exec(text)) !== null) {
-    blocks.push({
-      lang: (match[1] ?? '').trim(),
-      content: match[2] ?? '',
-      startOffset: match.index,
-      endOffset: match.index + match[0].length,
-    })
-  }
-
-  FENCE_REGEX_TILDE.lastIndex = 0
-  while ((match = FENCE_REGEX_TILDE.exec(text)) !== null) {
-    blocks.push({
-      lang: (match[1] ?? '').trim(),
-      content: match[2] ?? '',
-      startOffset: match.index,
-      endOffset: match.index + match[0].length,
-    })
-  }
-
-  // Sort by document position so transformCodeBlocks processes them in order
+  extractFencedBlocks(text, FENCE_REGEX_BACKTICK, blocks)
+  extractFencedBlocks(text, FENCE_REGEX_TILDE, blocks)
   blocks.sort((a, b) => a.startOffset - b.startOffset)
-
   return blocks
 }
 

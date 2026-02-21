@@ -60,6 +60,6 @@ export function indexToBytes(index: number): Buffer {
   return buf
 }
 
-export function bytesToIndex(buf: Buffer): number {
+function bytesToIndex(buf: Buffer): number {
   return buf.readUInt32BE(0) % CORPUS_SIZE
 }

@@ -43,7 +43,7 @@ export const FORMAT_VERSION = 1
 /** v2 LWE wire format version byte. */
 export const FORMAT_VERSION_V2 = 2
 
-export interface EncryptedPayload {
+interface EncryptedPayload {
   /** Base64url-encoded versioned payload. */
   readonly encoded: string
 }
@@ -142,8 +142,7 @@ function decryptV2(raw: Buffer, sessionKey: SessionKey): Result<string> {
   const nonce = raw.subarray(offset + TAG_BYTES, offset + TAG_BYTES + NONCE_BYTES)
   const bBytes = raw.subarray(offset + TAG_BYTES + NONCE_BYTES)
 
-  const expectedTag = hmacTag(nonce, bBytes, sessionKey.macKey)
-  if (!timingSafeEqual(tag, expectedTag)) {
+  if (!verifyHmac(tag, nonce, bBytes, sessionKey.macKey)) {
     return err(new Error('Decryption failed'))
   }
 
@@ -181,8 +180,7 @@ function decryptVersioned(raw: Buffer, sessionKey: SessionKey): Result<string> {
   const tag = raw.subarray(offset + NONCE_BYTES, offset + NONCE_BYTES + TAG_BYTES)
   const ciphertext = raw.subarray(offset + NONCE_BYTES + TAG_BYTES)
 
-  const expectedTag = hmacTag(nonce, ciphertext, sessionKey.macKey)
-  if (!timingSafeEqual(tag, expectedTag)) {
+  if (!verifyHmac(tag, nonce, ciphertext, sessionKey.macKey)) {
     return err(new Error('Decryption failed'))
   }
 
@@ -201,8 +199,7 @@ function decryptLegacy(raw: Buffer, sessionKey: SessionKey): Result<string> {
   const tag = raw.subarray(NONCE_BYTES, NONCE_BYTES + TAG_BYTES)
   const ciphertext = raw.subarray(NONCE_BYTES + TAG_BYTES)
 
-  const expectedTag = hmacTag(nonce, ciphertext, sessionKey.macKey)
-  if (!timingSafeEqual(tag, expectedTag)) {
+  if (!verifyHmac(tag, nonce, ciphertext, sessionKey.macKey)) {
     return err(new Error('Decryption failed'))
   }
 
@@ -218,6 +215,10 @@ function decryptAesCtrIndex(key: Buffer, nonce: Buffer, ciphertext: Buffer): num
 
 function hmacTag(nonce: Buffer, data: Buffer, macKey: Buffer): Buffer {
   return createHmac('sha256', macKey).update(nonce).update(data).digest()
+}
+
+function verifyHmac(tag: Buffer, nonce: Buffer, data: Buffer, macKey: Buffer): boolean {
+  return timingSafeEqual(tag, hmacTag(nonce, data, macKey))
 }
 
 /** Reads a 4-byte big-endian unsigned integer from a Buffer. */

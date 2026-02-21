@@ -220,17 +220,12 @@ function obfuscateMessages(messages: unknown[]): ObfuscateResult {
 
   // Step 1: collect all string contents across every message (handles both
   // string content and array-of-blocks format).
-  const allTexts: string[] = []
-  for (const msg of messages) {
+  const allTexts = messages.flatMap((msg) => {
     const content = extractContent(msg)
-    if (typeof content === 'string') {
-      allTexts.push(content)
-    } else if (Array.isArray(content)) {
-      for (const t of extractStringContents(content)) {
-        allTexts.push(t)
-      }
-    }
-  }
+    if (typeof content === 'string') return [content]
+    if (Array.isArray(content)) return extractStringContents(content)
+    return []
+  })
 
   // Step 2: build one global mapping from code blocks across ALL messages.
   // This ensures assistant messages with no code blocks still get their

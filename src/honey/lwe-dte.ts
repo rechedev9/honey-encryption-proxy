@@ -75,7 +75,7 @@ function derivePublicVector(key: Buffer, nonce: Buffer): readonly number[] {
   return a
 }
 
-export interface LweEncrypted {
+interface LweEncrypted {
   readonly nonce: Buffer
   /** LWE ciphertext scalar b ∈ [0, q−1], fits in uint16. */
   readonly b: number
