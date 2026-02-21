@@ -14,7 +14,9 @@
     "test": "bun test",
     "ci": "bun run typecheck && bun run test"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@noble/post-quantum": "^0.2.0"
+  },
   "devDependencies": {
     "typescript": "^5.7.2",
     "@types/node": "^22.0.0"

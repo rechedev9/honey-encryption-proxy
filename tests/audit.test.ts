@@ -3,9 +3,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { writeAuditEntry, getAuditFilePath, resetAuditState } from '../src/audit.ts'
-import { unlinkSync, readFileSync, mkdirSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { randomBytes } from 'node:crypto'
+import { writeAuditEntry, getAuditFilePath, resetAuditState, initAuditSigner } from '../src/audit.ts'
+import { unlinkSync, readFileSync, existsSync } from 'node:fs'
+import { dirname } from 'node:path'
 import type { AuditEntry } from '../src/types.ts'
 
 function makeEntry(overrides?: Partial<AuditEntry>): AuditEntry {
@@ -85,5 +86,51 @@ describe('Audit logger', () => {
     // actual audit code just logs a warning. We verify no exception escapes.
     // Since we can't easily mock the path, just verify the normal path works.
     await expect(writeAuditEntry(makeEntry())).resolves.toBeUndefined()
+  })
+
+  describe('SPHINCS+ audit signatures (SLH-DSA-SHA2-128s)', () => {
+    it('entry has no signature fields when signer is not initialised', async () => {
+      // resetAuditState() already called in beforeEach — signer is null
+      await writeAuditEntry(makeEntry())
+
+      const content = readFileSync(auditFile, 'utf-8').trim()
+      const parsed = JSON.parse(content) as AuditEntry
+      expect(parsed.signature).toBeUndefined()
+      expect(parsed.sigAlgorithm).toBeUndefined()
+    })
+
+    it('entry includes signature and sigAlgorithm after initAuditSigner()', async () => {
+      initAuditSigner(randomBytes(32))
+      await writeAuditEntry(makeEntry())
+
+      const content = readFileSync(auditFile, 'utf-8').trim()
+      const parsed = JSON.parse(content) as AuditEntry
+      expect(parsed.signature).toBeDefined()
+      expect(parsed.sigAlgorithm).toBe('slh-dsa-sha2-128s')
+    })
+
+    it('signature is a non-empty base64url string', async () => {
+      initAuditSigner(randomBytes(32))
+      await writeAuditEntry(makeEntry())
+
+      const content = readFileSync(auditFile, 'utf-8').trim()
+      const parsed = JSON.parse(content) as AuditEntry
+      expect(typeof parsed.signature).toBe('string')
+      expect((parsed.signature?.length ?? 0)).toBeGreaterThan(0)
+    })
+
+    it('different entries produce different signatures', async () => {
+      const macKey = randomBytes(32)
+      initAuditSigner(macKey)
+
+      await writeAuditEntry(makeEntry({ requestId: 'req-a' }))
+      await writeAuditEntry(makeEntry({ requestId: 'req-b' }))
+
+      const lines = readFileSync(auditFile, 'utf-8').trim().split('\n')
+      const first = JSON.parse(lines[0] as string) as AuditEntry
+      const second = JSON.parse(lines[1] as string) as AuditEntry
+
+      expect(first.signature).not.toBe(second.signature)
+    })
   })
 })

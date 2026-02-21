@@ -1,131 +1,175 @@
-﻿/**
+/**
  * Honey Encryption engine.
  *
  * Implements the full HE pipeline for a code string:
  *
  *   encrypt(code, sessionKey):
  *     1. DTE.encode(code, key) → corpus index
- *     2. Serialise index to 4 bytes
- *     3. AES-256-CTR(bytes, key, nonce) → ciphertext      [unauthenticated!]
- *     4. HMAC-SHA256(nonce || ciphertext, macKey) → tag   [integrity for
- *                                                          the legitimate
- *                                                          proxy]
- *     5. Return base64(version || nonce || tag || ciphertext)
+ *     2. LWE-encrypt the index → (nonce, b)   [v2]
+ *     3. HMAC-SHA256(nonce || b, macKey) → tag [integrity check]
+ *     4. Return base64(v2 || tag || nonce || b)
  *
  *   decrypt(encoded, sessionKey):
- *     1. Detect version byte (v1) or fall back to legacy (v0) layout
- *     2. Parse nonce || tag || ciphertext
- *     3. Verify HMAC (only the legitimate proxy can pass this)
- *     4. AES-256-CTR.decrypt(ciphertext, key, nonce) → index bytes
- *     5. DTE.decode(index) → plausible code (real if key is correct)
+ *     1. Detect version byte: 0x02 → v2 (LWE), 0x01 → v1 (AES-CTR), else → v0 (legacy)
+ *     2. Verify HMAC (only the legitimate proxy can pass this)
+ *     3. LWE-decrypt → corpus index                          [v2]
+ *     4. DTE.decode(index) → plausible code
  *
- * Honey property:
- *   If an adversary strips the MAC and brute-forces the AES key, they get
- *   a different corpus index with each candidate key, i.e., a different
- *   plausible code snippet.  They cannot tell which decryption is "real".
+ * Honey property (v2):
+ *   With wrong fpeKey s', the LWE ciphertext decrypts to a uniformly
+ *   distributed corpus index — every candidate key gives a different
+ *   plausible code snippet.  The adversary cannot identify the real key.
  *
- * Note: The proxy sends FPE-obfuscated code to Claude (not the AES
- * ciphertext).  This engine is used for:
- *   a) Encrypting the identifier mapping for secure local storage.
- *   b) Demonstrating / testing the HE security property.
+ * Wire formats:
+ *   v0 (legacy): nonce(16) || HMAC(32) || ciphertext(4)                = 52 bytes
+ *   v1:          0x01 || nonce(16) || HMAC(32) || ciphertext(4)        = 53 bytes
+ *   v2 (LWE):    0x02 || HMAC(32) || nonce(16) || b_uint16BE(2)        = 51 bytes
  */
 
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
-import { encode as dteEncode, decode as dteDecode, indexToBytes, bytesToIndex } from './dte-corpus.ts'
+import { createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto'
+import { encode as dteEncode, decode as dteDecode } from './dte-corpus.ts'
+import { lweEncrypt, lweDecrypt, lweDecryptWithSeed } from './lwe-dte.ts'
 import { err, ok } from '../types.ts'
 import type { Result, SessionKey } from '../types.ts'
 
-const NONCE_BYTES = 16   // AES-CTR IV
+const NONCE_BYTES = 16   // AES-CTR IV / LWE nonce
 const TAG_BYTES = 32     // HMAC-SHA256 output
-const INDEX_BYTES = 4    // serialised corpus index
+const INDEX_BYTES = 4    // serialised corpus index (v0/v1)
+const B_BYTES = 2        // LWE scalar b as uint16BE (v2)
 
-/** Wire format version. Prepended as the first byte of every v1+ payload. */
+/** Legacy v1 wire format version byte. */
 export const FORMAT_VERSION = 1
 
+/** v2 LWE wire format version byte. */
+export const FORMAT_VERSION_V2 = 2
+
 export interface EncryptedPayload {
-  /** Base64url-encoded version || nonce || HMAC tag || ciphertext */
+  /** Base64url-encoded versioned payload. */
   readonly encoded: string
 }
 
+/**
+ * Encrypts a code string using LWE-DTE (v2 wire format).
+ * Emits: 0x02 || HMAC(32) || nonce(16) || b_uint16BE(2) = 51 bytes.
+ */
 export function encrypt(code: string, sessionKey: SessionKey): Result<EncryptedPayload> {
   const index = dteEncode(code, sessionKey.key)
-  const plainBytes = indexToBytes(index)
+  const { nonce, b } = lweEncrypt(index, sessionKey.key, sessionKey.fpeKey)
 
-  const nonce = randomBytes(NONCE_BYTES)
+  const bBytes = Buffer.alloc(B_BYTES)
+  bBytes.writeUInt16BE(b, 0)
 
-  const cipher = createCipheriv('aes-256-ctr', sessionKey.key, nonce)
-  const ciphertext = Buffer.concat([cipher.update(plainBytes), cipher.final()])
+  const tag = hmacTag(nonce, bBytes, sessionKey.macKey)
 
-  const tag = hmacTag(nonce, ciphertext, sessionKey.macKey)
-
-  const versionByte = Buffer.from([FORMAT_VERSION])
-  const payload = Buffer.concat([versionByte, nonce, tag, ciphertext])
+  const versionByte = Buffer.from([FORMAT_VERSION_V2])
+  const payload = Buffer.concat([versionByte, tag, nonce, bBytes])
   return ok({ encoded: payload.toString('base64url') })
 }
 
 /**
  * Decrypts an EncryptedPayload using the given SessionKey.
  *
- * All failure modes (short payload, HMAC mismatch, etc.) are reported as
- * a single generic error message - 'Decryption failed' - to prevent HMAC
- * oracle attacks that could leak information about the wire format.
+ * Dispatches on the version byte: v2 → LWE path, v1 → AES-CTR path,
+ * else → legacy v0 layout.
+ *
+ * All failure modes report a single generic error to prevent oracle attacks.
  */
 export function decrypt(payload: EncryptedPayload, sessionKey: SessionKey): Result<string> {
   const raw = Buffer.from(payload.encoded, 'base64url')
 
-  if (raw.length > 0 && raw[0] === FORMAT_VERSION) {
-    return decryptVersioned(raw, sessionKey, false)
+  if (raw.length > 0) {
+    const version = raw[0] ?? 0
+    if (version === FORMAT_VERSION_V2) {
+      return decryptV2(raw, sessionKey)
+    }
+    if (version === FORMAT_VERSION) {
+      return decryptVersioned(raw, sessionKey)
+    }
   }
-  return decryptLegacy(raw, sessionKey, false)
+  return decryptLegacy(raw, sessionKey)
 }
 
 /**
  * Demonstrates the honey property: decrypting with a wrong key always
  * produces a plausible (but different) code snippet.
  *
- * @internal This function intentionally skips HMAC verification. It is
- * provided ONLY for testing and demonstration of the honey-encryption
- * security property. It MUST NOT be called in any request-processing
- * path — doing so would bypass integrity checks entirely.
+ * @internal Intentionally skips HMAC verification. Use ONLY for testing
+ * and demonstration of the honey-encryption security property. MUST NOT
+ * be called in any request-processing path.
  */
 export function decryptHoney(payload: EncryptedPayload, wrongKey: Buffer): string {
   const raw = Buffer.from(payload.encoded, 'base64url')
 
-  if (raw.length > 0 && raw[0] === FORMAT_VERSION) {
-    const offset = 1
-    const minLen = offset + NONCE_BYTES + TAG_BYTES + INDEX_BYTES
-    if (raw.length < minLen) return ''
+  if (raw.length > 0) {
+    const version = raw[0] ?? 0
 
-    const nonce = raw.subarray(offset, offset + NONCE_BYTES)
-    const ciphertext = raw.subarray(offset + NONCE_BYTES + TAG_BYTES)
+    if (version === FORMAT_VERSION_V2) {
+      return decryptHoneyV2(raw, wrongKey)
+    }
 
-    const decipher = createDecipheriv('aes-256-ctr', wrongKey, nonce)
-    const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+    if (version === FORMAT_VERSION) {
+      // v1 layout: 0x01 || nonce(16) || HMAC(32) || ciphertext(4)
+      const offset = 1
+      const minLen = offset + NONCE_BYTES + TAG_BYTES + INDEX_BYTES
+      if (raw.length < minLen) return ''
 
-    const index = bytesToIndex(plainBytes)
-    return dteDecode(index)
+      const nonce = raw.subarray(offset, offset + NONCE_BYTES)
+      const ciphertext = raw.subarray(offset + NONCE_BYTES + TAG_BYTES)
+      return dteDecode(decryptAesCtrIndex(wrongKey, nonce, ciphertext))
+    }
   }
 
-  // Legacy v0 layout
+  // Legacy v0 layout: nonce(16) || HMAC(32) || ciphertext(4)
   if (raw.length < NONCE_BYTES + TAG_BYTES + INDEX_BYTES) return ''
 
-  const nonce = raw.subarray(0, NONCE_BYTES)
-  const ciphertext = raw.subarray(NONCE_BYTES + TAG_BYTES)
-
-  const decipher = createDecipheriv('aes-256-ctr', wrongKey, nonce)
-  const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
-
-  const index = bytesToIndex(plainBytes)
-  return dteDecode(index)
+  const v0Nonce = raw.subarray(0, NONCE_BYTES)
+  const v0Ciphertext = raw.subarray(NONCE_BYTES + TAG_BYTES)
+  return dteDecode(decryptAesCtrIndex(wrongKey, v0Nonce, v0Ciphertext))
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────
 
-function decryptVersioned(
-  raw: Buffer,
-  sessionKey: SessionKey,
-  _skipMac: boolean,
-): Result<string> {
+function decryptV2(raw: Buffer, sessionKey: SessionKey): Result<string> {
+  // Layout: 0x02 || HMAC(32) || nonce(16) || b_uint16BE(2)
+  const offset = 1
+  const minLen = offset + TAG_BYTES + NONCE_BYTES + B_BYTES
+
+  if (raw.length < minLen) {
+    return err(new Error('Decryption failed'))
+  }
+
+  const tag = raw.subarray(offset, offset + TAG_BYTES)
+  const nonce = raw.subarray(offset + TAG_BYTES, offset + TAG_BYTES + NONCE_BYTES)
+  const bBytes = raw.subarray(offset + TAG_BYTES + NONCE_BYTES)
+
+  const expectedTag = hmacTag(nonce, bBytes, sessionKey.macKey)
+  if (!timingSafeEqual(tag, expectedTag)) {
+    return err(new Error('Decryption failed'))
+  }
+
+  const b = bBytes.readUInt16BE(0)
+  const index = lweDecrypt(nonce, b, sessionKey.key, sessionKey.fpeKey)
+  return ok(dteDecode(index))
+}
+
+function decryptHoneyV2(raw: Buffer, wrongKey: Buffer): string {
+  // Layout: 0x02 || HMAC(32) || nonce(16) || b_uint16BE(2)
+  const offset = 1
+  const minLen = offset + TAG_BYTES + NONCE_BYTES + B_BYTES
+
+  if (raw.length < minLen) return ''
+
+  const nonce = raw.subarray(offset + TAG_BYTES, offset + TAG_BYTES + NONCE_BYTES)
+  const bBytes = raw.subarray(offset + TAG_BYTES + NONCE_BYTES)
+  const b = bBytes.readUInt16BE(0)
+
+  // Adversary uses wrongKey for both a-vector and s-vector derivation
+  const index = lweDecryptWithSeed(nonce, b, wrongKey, wrongKey)
+  return dteDecode(index)
+}
+
+function decryptVersioned(raw: Buffer, sessionKey: SessionKey): Result<string> {
+  // v1 layout: 0x01 || nonce(16) || HMAC(32) || ciphertext(4)
   const offset = 1
   const minLen = offset + NONCE_BYTES + TAG_BYTES + INDEX_BYTES
 
@@ -138,25 +182,15 @@ function decryptVersioned(
   const ciphertext = raw.subarray(offset + NONCE_BYTES + TAG_BYTES)
 
   const expectedTag = hmacTag(nonce, ciphertext, sessionKey.macKey)
-
   if (!timingSafeEqual(tag, expectedTag)) {
     return err(new Error('Decryption failed'))
   }
 
-  const decipher = createDecipheriv('aes-256-ctr', sessionKey.key, nonce)
-  const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
-
-  const index = bytesToIndex(plainBytes)
-  const code = dteDecode(index)
-
-  return ok(code)
+  return ok(dteDecode(decryptAesCtrIndex(sessionKey.key, nonce, ciphertext)))
 }
 
-function decryptLegacy(
-  raw: Buffer,
-  sessionKey: SessionKey,
-  _skipMac: boolean,
-): Result<string> {
+function decryptLegacy(raw: Buffer, sessionKey: SessionKey): Result<string> {
+  // v0 layout: nonce(16) || HMAC(32) || ciphertext(4)
   const minLen = NONCE_BYTES + TAG_BYTES + INDEX_BYTES
 
   if (raw.length < minLen) {
@@ -168,20 +202,26 @@ function decryptLegacy(
   const ciphertext = raw.subarray(NONCE_BYTES + TAG_BYTES)
 
   const expectedTag = hmacTag(nonce, ciphertext, sessionKey.macKey)
-
   if (!timingSafeEqual(tag, expectedTag)) {
     return err(new Error('Decryption failed'))
   }
 
-  const decipher = createDecipheriv('aes-256-ctr', sessionKey.key, nonce)
-  const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
-
-  const index = bytesToIndex(plainBytes)
-  const code = dteDecode(index)
-
-  return ok(code)
+  return ok(dteDecode(decryptAesCtrIndex(sessionKey.key, nonce, ciphertext)))
 }
 
-function hmacTag(nonce: Buffer, ciphertext: Buffer, macKey: Buffer): Buffer {
-  return createHmac('sha256', macKey).update(nonce).update(ciphertext).digest()
+/** Decrypts AES-256-CTR ciphertext and reads the corpus index from the plaintext. */
+function decryptAesCtrIndex(key: Buffer, nonce: Buffer, ciphertext: Buffer): number {
+  const decipher = createDecipheriv('aes-256-ctr', key, nonce)
+  const plainBytes = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+  return bytesToIndex(plainBytes)
+}
+
+function hmacTag(nonce: Buffer, data: Buffer, macKey: Buffer): Buffer {
+  return createHmac('sha256', macKey).update(nonce).update(data).digest()
+}
+
+/** Reads a 4-byte big-endian unsigned integer from a Buffer. */
+function bytesToIndex(buf: Buffer): number {
+  if (buf.length < 4) return 0
+  return buf.readUInt32BE(0)
 }

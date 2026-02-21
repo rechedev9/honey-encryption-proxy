@@ -20,9 +20,17 @@ export interface Config {
   readonly proxyPort: number
   readonly upstreamBaseUrl: string
   readonly logLevel: 'debug' | 'info' | 'warn' | 'error'
+  /** Base64url-encoded ML-KEM-768 ciphertext for hybrid key strengthening. */
+  readonly honeyKyberCapsule?: string
 }
 
-const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error'])
+type LogLevel = Config['logLevel']
+const LOG_LEVELS: ReadonlySet<string> = new Set<LogLevel>(['debug', 'info', 'warn', 'error'])
+
+function isLogLevel(value: string): value is LogLevel {
+  return LOG_LEVELS.has(value)
+}
+
 const DEFAULT_PORT = 8080
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com'
 
@@ -45,9 +53,9 @@ export function loadConfig(): Result<Config> {
 
   const upstream = process.env['ANTHROPIC_BASE_URL_UPSTREAM'] ?? DEFAULT_UPSTREAM
   const rawLevel = process.env['LOG_LEVEL'] ?? 'info'
-  const logLevel = LOG_LEVELS.has(rawLevel)
-    ? (rawLevel as Config['logLevel'])
-    : 'info'
+  const logLevel: LogLevel = isLogLevel(rawLevel) ? rawLevel : 'info'
+
+  const kyberCapsule = process.env['HONEY_KYBER_CAPSULE']
 
   return ok({
     anthropicApiKey: apiKey,
@@ -55,5 +63,6 @@ export function loadConfig(): Result<Config> {
     proxyPort: port,
     upstreamBaseUrl: upstream,
     logLevel,
+    ...(kyberCapsule !== undefined ? { honeyKyberCapsule: kyberCapsule } : {}),
   })
 }

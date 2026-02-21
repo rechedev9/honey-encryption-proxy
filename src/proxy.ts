@@ -24,7 +24,7 @@ import { deriveSessionKey, zeroSessionKey } from './honey/key-manager.ts'
 import { buildGlobalMapping, applyMappingToFullText, deobfuscateText } from './ast/mapper.ts'
 import type { ObfuscationStats } from './ast/mapper.ts'
 import { logger, setLogLevel } from './logger.ts'
-import { writeAuditEntry } from './audit.ts'
+import { writeAuditEntry, initAuditSigner } from './audit.ts'
 import { StreamDeobfuscator } from './stream-deobfuscator.ts'
 import type { AuditEntry, IdentifierMapping } from './types.ts'
 
@@ -42,13 +42,21 @@ setLogLevel(config.logLevel)
 // Derive a persistent session key from the passphrase.
 // A fresh salt is generated each time the proxy starts; re-derivation
 // across restarts is intentionally not supported (forward secrecy).
-const keyResult = deriveSessionKey(config.honeyPassphrase)
+// If HONEY_KYBER_CAPSULE is set, the ML-KEM shared secret is XOR'd into
+// the master key for a classical + post-quantum hybrid derivation.
+const kyberCapsule = config.honeyKyberCapsule !== undefined
+  ? Buffer.from(config.honeyKyberCapsule, 'base64url')
+  : undefined
+const keyResult = deriveSessionKey(config.honeyPassphrase, kyberCapsule)
 if (!keyResult.ok) {
   logger.error('Key derivation failed', { error: keyResult.error.message })
   process.exit(1)
 }
 
 const SESSION_KEY = keyResult.value
+
+// Initialise SPHINCS+ audit signer using the session MAC key.
+initAuditSigner(SESSION_KEY.macKey)
 
 // Scrub secrets from process.env immediately after use.
 // They are now held in  / ; keeping them in
@@ -61,18 +69,29 @@ logger.info('Honey proxy starting', {
   upstream: config.upstreamBaseUrl,
 })
 logger.debug('Session established', { sessionId: SESSION_KEY.sessionId })
+logger.info('ML-KEM-768 public key (quantum-safe hybrid)', {
+  mlkemPublicKey: SESSION_KEY.toJSON().mlkemPublicKey,
+})
 
 // ── Anthropic message type (minimal surface) ───────────────────────────────────────────────
 
-interface AnthropicMessage {
-  role: 'user' | 'assistant'
-  content: string | unknown[]
+interface AnthropicTextBlock {
+  readonly type: 'text'
+  readonly text: string
+  readonly [key: string]: unknown
 }
 
-interface AnthropicRequestBody {
-  messages?: AnthropicMessage[]
-  stream?: boolean
-  [key: string]: unknown
+/**
+ * Type guard for Anthropic text content blocks.
+ * Narrows `unknown` to `AnthropicTextBlock` using structural checks.
+ */
+function isTextBlock(item: unknown): item is AnthropicTextBlock {
+  if (typeof item !== 'object' || item === null) return false
+  if (!('type' in item) || !('text' in item)) return false
+  // The `in` checks confirm the properties exist; narrow via indexed access
+  // on the structurally-validated object.
+  const obj = item as Record<string, unknown>
+  return obj['type'] === 'text' && typeof obj['text'] === 'string'
 }
 
 // ── Header allowlist ──────────────────────────────────────────────────────────────────
@@ -104,12 +123,47 @@ function filterResponseHeaders(upstream: Headers): Headers {
   return filtered
 }
 
+/**
+ * Builds the upstream URL from a client request URL, with SSRF origin validation.
+ * Returns null if the origin does not match the configured upstream.
+ */
+function buildUpstreamUrl(clientUrl: URL): URL | null {
+  const upstreamBase = new URL(config.upstreamBaseUrl)
+  const upstream = new URL(clientUrl.pathname + clientUrl.search, upstreamBase.origin)
+  if (upstream.origin !== upstreamBase.origin) return null
+  return upstream
+}
+
+/**
+ * Filters client request headers through the allowlist and injects the API key.
+ */
+function filterRequestHeaders(clientHeaders: Headers): Headers {
+  const filtered = new Headers()
+  for (const [name, value] of clientHeaders.entries()) {
+    if (ALLOWED_REQUEST_HEADERS.has(name.toLowerCase())) {
+      filtered.set(name, value)
+    }
+  }
+  filtered.set('x-api-key', config.anthropicApiKey)
+  return filtered
+}
+
 // ── Request handling ─────────────────────────────────────────────────────────────────────
 
 interface ObfuscateResult {
-  readonly messages: AnthropicMessage[]
+  readonly messages: unknown[]
   readonly mapping: IdentifierMapping
   readonly stats: ObfuscationStats
+}
+
+/** Safely extracts the `content` property from an unknown message object. */
+function extractContent(msg: unknown): string | unknown[] | undefined {
+  if (typeof msg !== 'object' || msg === null) return undefined
+  if (!('content' in msg)) return undefined
+  const content = (msg as Record<string, unknown>)['content']
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content
+  return undefined
 }
 
 /**
@@ -119,18 +173,8 @@ interface ObfuscateResult {
 function extractStringContents(content: unknown[]): readonly string[] {
   const result: string[] = []
   for (const item of content) {
-    if (
-      typeof item === 'object' &&
-      item !== null &&
-      'type' in item &&
-      'text' in item &&
-      (item as Record<string, unknown>)['type'] === 'text' &&
-      typeof (item as Record<string, unknown>)['text'] === 'string'
-    ) {
-      const text = (item as Record<string, unknown>)['text']
-      if (typeof text === 'string') {
-        result.push(text)
-      }
+    if (isTextBlock(item)) {
+      result.push(item.text)
     }
   }
   return result
@@ -150,26 +194,15 @@ function applyMappingToContent(
   }
   if (!Array.isArray(content)) return content
   return content.map((item) => {
-    if (
-      typeof item === 'object' &&
-      item !== null &&
-      'type' in item &&
-      'text' in item &&
-      (item as Record<string, unknown>)['type'] === 'text' &&
-      typeof (item as Record<string, unknown>)['text'] === 'string'
-    ) {
-      const record = item as Record<string, unknown>
-      const text = record['text']
-      if (typeof text === 'string') {
-        const obfuscatedText = applyMappingToFullText(text, mapping, identifierRealToFake)
-        return { ...record, text: obfuscatedText }
-      }
+    if (isTextBlock(item)) {
+      const obfuscatedText = applyMappingToFullText(item.text, mapping, identifierRealToFake)
+      return { ...item, text: obfuscatedText }
     }
     return item
   })
 }
 
-function obfuscateMessages(messages: AnthropicMessage[]): ObfuscateResult {
+function obfuscateMessages(messages: unknown[]): ObfuscateResult {
   const emptyMapping: IdentifierMapping = {
     realToFake: new Map(),
     fakeToReal: new Map(),
@@ -179,10 +212,11 @@ function obfuscateMessages(messages: AnthropicMessage[]): ObfuscateResult {
   // string content and array-of-blocks format).
   const allTexts: string[] = []
   for (const msg of messages) {
-    if (typeof msg.content === 'string') {
-      allTexts.push(msg.content)
-    } else if (Array.isArray(msg.content)) {
-      for (const t of extractStringContents(msg.content)) {
+    const content = extractContent(msg)
+    if (typeof content === 'string') {
+      allTexts.push(content)
+    } else if (Array.isArray(content)) {
+      for (const t of extractStringContents(content)) {
         allTexts.push(t)
       }
     }
@@ -204,12 +238,13 @@ function obfuscateMessages(messages: AnthropicMessage[]): ObfuscateResult {
 
   // Step 3: apply the global mapping to EVERY message (code blocks + prose).
   const obfuscated = messages.map((msg) => {
-    const obfuscatedContent = applyMappingToContent(
-      msg.content,
-      mapping,
-      identifierRealToFake,
-    )
-    return { ...msg, content: obfuscatedContent }
+    const content = extractContent(msg)
+    if (content === undefined) return msg
+    const obfuscatedContent = applyMappingToContent(content, mapping, identifierRealToFake)
+    if (typeof msg === 'object' && msg !== null) {
+      return { ...msg, content: obfuscatedContent }
+    }
+    return msg
   })
 
   return { messages: obfuscated, mapping, stats }
@@ -219,31 +254,15 @@ async function forwardRequest(
   originalReq: Request,
   body: string,
 ): Promise<Response> {
-  const url = new URL(originalReq.url)
-  const upstreamBase = new URL(config.upstreamBaseUrl)
-  const upstreamUrl = new URL(url.pathname + url.search, upstreamBase.origin)
-
-  // Guard: verify origin has not been manipulated
-  if (upstreamUrl.origin !== upstreamBase.origin) {
-    logger.error('Upstream URL origin mismatch — possible SSRF', {
-      expected: upstreamBase.origin,
-      got: upstreamUrl.origin,
-    })
+  const upstreamUrl = buildUpstreamUrl(new URL(originalReq.url))
+  if (upstreamUrl === null) {
+    logger.error('Upstream URL origin mismatch — possible SSRF')
     return new Response('Internal Server Error', { status: 500 })
   }
 
-  const headers = new Headers()
-  // Only forward allow-listed headers; inject the real API key
-  for (const [name, value] of originalReq.headers.entries()) {
-    if (ALLOWED_REQUEST_HEADERS.has(name.toLowerCase())) {
-      headers.set(name, value)
-    }
-  }
-  headers.set('x-api-key', config.anthropicApiKey)
-
   return fetch(upstreamUrl.toString(), {
     method: originalReq.method,
-    headers,
+    headers: filterRequestHeaders(originalReq.headers),
     body,
     redirect: 'manual',
   })
@@ -273,15 +292,21 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     return new Response('Request Entity Too Large', { status: 413 })
   }
 
-  let parsed: AnthropicRequestBody
+  let parsed: unknown
   try {
-    parsed = JSON.parse(rawBody) as AnthropicRequestBody
+    parsed = JSON.parse(rawBody) as unknown
   } catch (e) {
     logger.warn('Non-JSON body on /v1/messages — rejecting', { requestId })
     return new Response('Bad Request: /v1/messages requires a JSON body', { status: 400 })
   }
 
-  const messages = parsed.messages
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    logger.warn('Request body is not a JSON object — rejecting', { requestId })
+    return new Response('Bad Request: /v1/messages requires a JSON object', { status: 400 })
+  }
+
+  const body = parsed as Record<string, unknown>
+  const messages = body['messages']
   if (!Array.isArray(messages)) {
     logger.warn('Request missing messages array — rejecting', { requestId })
     return new Response('Bad Request: messages must be an array', { status: 400 })
@@ -294,9 +319,9 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     logger.info('Obfuscated identifiers', { requestId, count: mappingSize })
   }
 
-  const outBody = JSON.stringify({ ...parsed, messages: obfuscatedMessages })
+  const outBody = JSON.stringify({ ...body, messages: obfuscatedMessages })
   const upstreamResponse = await forwardRequest(req, outBody)
-  const isStreaming = parsed.stream === true ||
+  const isStreaming = body['stream'] === true ||
     (upstreamResponse.headers.get('content-type') ?? '').includes('text/event-stream')
 
   const emitAudit = (upstreamStatus: number): void => {
@@ -423,26 +448,15 @@ const server = Bun.serve({
     }
 
     // Transparent passthrough for all other routes
-    const url2 = new URL(req.url)
-    const upstreamBase2 = new URL(config.upstreamBaseUrl)
-    const upstreamUrl2 = new URL(url2.pathname + url2.search, upstreamBase2.origin)
-
-    if (upstreamUrl2.origin !== upstreamBase2.origin) {
-      logger.error('Passthrough URL origin mismatch', { got: upstreamUrl2.origin })
+    const upstreamUrl = buildUpstreamUrl(url)
+    if (upstreamUrl === null) {
+      logger.error('Passthrough URL origin mismatch')
       return new Response('Internal Server Error', { status: 500 })
     }
 
-    const passthroughHeaders = new Headers()
-    for (const [name, value] of req.headers.entries()) {
-      if (ALLOWED_REQUEST_HEADERS.has(name.toLowerCase())) {
-        passthroughHeaders.set(name, value)
-      }
-    }
-    passthroughHeaders.set('x-api-key', config.anthropicApiKey)
-
-    return fetch(upstreamUrl2.toString(), {
+    return fetch(upstreamUrl.toString(), {
       method: req.method,
-      headers: passthroughHeaders,
+      headers: filterRequestHeaders(req.headers),
       body: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
       redirect: 'manual',
     })

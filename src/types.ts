@@ -28,11 +28,18 @@ export interface SessionKey {
   readonly sessionId: string
   readonly salt: Buffer
   readonly derivedAt: number
+  /** Base64url-encoded ML-KEM-768 public key (safe to share). */
+  readonly mlkemPublicKey: string
   /**
    * Prevents accidental key-material serialization.
    * JSON.stringify(sessionKey) returns only safe metadata — never key bytes.
    */
-  toJSON(): { readonly sessionId: string; readonly derivedAt: number }
+  toJSON(): {
+    readonly sessionId: string
+    readonly derivedAt: number
+    readonly keyDerivation: string
+    readonly mlkemPublicKey: string
+  }
 }
 
 // ── Code extraction ─────────────────────────────────────────────────────────
@@ -66,6 +73,10 @@ export interface AuditEntry {
   readonly durationMs: number
   readonly streaming: boolean
   readonly upstreamStatus: number
+  /** Base64url-encoded SLH-DSA-SHA2-128s signature over the entry (sans this field). */
+  readonly signature?: string
+  /** Signing algorithm used, e.g. 'slh-dsa-sha2-128s'. */
+  readonly sigAlgorithm?: string
 }
 
 // ── Request context ──────────────────────────────────────────────────────────

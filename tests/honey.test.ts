@@ -1,15 +1,18 @@
 /**
- * Tests for the Honey Encryption engine.
+ * Tests for the Honey Encryption engine and key derivation.
  *
  * Verifies:
- *  - encrypt → decrypt with correct key returns original content (corpus index)
- *  - decrypt with wrong key returns a different but valid corpus snippet
- *  - the honey property: wrong-key decryptions are plausible
+ *  - v2 LWE encrypt → decrypt round-trip (new default format)
+ *  - v1 legacy AES-CTR decrypt still works (backward compat)
+ *  - v0 legacy decrypt (no version byte) still works
+ *  - Honey property: wrong-key decryptions are plausible
+ *  - HMAC tamper detection
+ *  - ML-KEM-768 public key present in toJSON()
  */
 
 import { describe, it, expect } from 'bun:test'
 import { randomBytes } from 'node:crypto'
-import { encrypt, decrypt, decryptHoney, FORMAT_VERSION } from '../src/honey/engine.ts'
+import { encrypt, decrypt, decryptHoney, FORMAT_VERSION, FORMAT_VERSION_V2 } from '../src/honey/engine.ts'
 import { deriveSessionKey, deriveFromSalt } from '../src/honey/key-manager.ts'
 import { CORPUS_SIZE } from '../src/corpus/index.ts'
 
@@ -19,8 +22,8 @@ const SAMPLE_CODE = `function calculateInvoiceTotal(items: LineItem[]): number {
 }`
 
 describe('HoneyEngine', () => {
-  describe('encrypt / decrypt round-trip', () => {
-    it('returns the original code when decrypted with the correct key', () => {
+  describe('v2 LWE format (default)', () => {
+    it('returns a non-empty code string when decrypted with the correct key', () => {
       const keyResult = deriveSessionKey(PASSPHRASE)
       expect(keyResult.ok).toBe(true)
       if (!keyResult.ok) return
@@ -33,10 +36,34 @@ describe('HoneyEngine', () => {
       expect(decResult.ok).toBe(true)
       if (!decResult.ok) return
 
-      // DTE round-trip: we get a corpus snippet, not the raw code.
-      // Verify it is a non-empty string.
       expect(typeof decResult.value).toBe('string')
       expect(decResult.value.length).toBeGreaterThan(0)
+    })
+
+    it('emits v2 wire format: version(1) + HMAC(32) + nonce(16) + b(2) = 51 bytes', () => {
+      const keyResult = deriveSessionKey(PASSPHRASE)
+      expect(keyResult.ok).toBe(true)
+      if (!keyResult.ok) return
+
+      const encResult = encrypt(SAMPLE_CODE, keyResult.value)
+      expect(encResult.ok).toBe(true)
+      if (!encResult.ok) return
+
+      const raw = Buffer.from(encResult.value.encoded, 'base64url')
+      expect(raw.length).toBe(51)
+    })
+
+    it('v2 payload starts with version byte 0x02', () => {
+      const keyResult = deriveSessionKey(PASSPHRASE)
+      expect(keyResult.ok).toBe(true)
+      if (!keyResult.ok) return
+
+      const encResult = encrypt(SAMPLE_CODE, keyResult.value)
+      expect(encResult.ok).toBe(true)
+      if (!encResult.ok) return
+
+      const raw = Buffer.from(encResult.value.encoded, 'base64url')
+      expect(raw[0]).toBe(FORMAT_VERSION_V2)
     })
 
     it('fails HMAC verification with a tampered payload', () => {
@@ -55,32 +82,30 @@ describe('HoneyEngine', () => {
       const decResult = decrypt(tampered, keyResult.value)
       expect(decResult.ok).toBe(false)
     })
+  })
 
-    it('produces a deterministic ciphertext structure (version, nonce, tag, ciphertext present)', () => {
+  describe('v1 backward compatibility', () => {
+    it('decrypts v1 payloads (AES-256-CTR, version byte 0x01)', () => {
       const keyResult = deriveSessionKey(PASSPHRASE)
       expect(keyResult.ok).toBe(true)
       if (!keyResult.ok) return
 
-      const encResult = encrypt(SAMPLE_CODE, keyResult.value)
-      expect(encResult.ok).toBe(true)
-      if (!encResult.ok) return
+      // Manually build a v1 payload: 0x01 || nonce(16) || HMAC(32) || ciphertext(4)
+      const { createCipheriv, createHmac: hmac, randomBytes: rb } = require('node:crypto')
+      const nonce = rb(16)
+      const { encode: dteEncode, indexToBytes } = require('../src/honey/dte-corpus.ts')
+      const index = dteEncode(SAMPLE_CODE, keyResult.value.key)
+      const plainBytes = indexToBytes(index)
+      const cipher = createCipheriv('aes-256-ctr', keyResult.value.key, nonce)
+      const ct = Buffer.concat([cipher.update(plainBytes), cipher.final()])
+      const tag = hmac('sha256', keyResult.value.macKey).update(nonce).update(ct).digest()
+      const v1Payload = Buffer.concat([Buffer.from([FORMAT_VERSION]), nonce, tag, ct])
 
-      // version(1) + nonce(16) + tag(32) + ciphertext(4) = 53 bytes
-      const raw = Buffer.from(encResult.value.encoded, 'base64url')
-      expect(raw.length).toBe(53)
-    })
-
-    it('v1 payload starts with version byte 0x01', () => {
-      const keyResult = deriveSessionKey(PASSPHRASE)
-      expect(keyResult.ok).toBe(true)
-      if (!keyResult.ok) return
-
-      const encResult = encrypt(SAMPLE_CODE, keyResult.value)
-      expect(encResult.ok).toBe(true)
-      if (!encResult.ok) return
-
-      const raw = Buffer.from(encResult.value.encoded, 'base64url')
-      expect(raw[0]).toBe(FORMAT_VERSION)
+      const decResult = decrypt({ encoded: v1Payload.toString('base64url') }, keyResult.value)
+      expect(decResult.ok).toBe(true)
+      if (!decResult.ok) return
+      expect(typeof decResult.value).toBe('string')
+      expect(decResult.value.length).toBeGreaterThan(0)
     })
 
     it('decrypts legacy v0 payloads (no version byte)', () => {
@@ -89,17 +114,14 @@ describe('HoneyEngine', () => {
       if (!keyResult.ok) return
 
       // Manually build a v0 payload (nonce || tag || ciphertext, no version byte)
-      const { createCipheriv, createHmac, randomBytes: rb } = require('node:crypto')
+      const { createCipheriv, createHmac: hmac, randomBytes: rb } = require('node:crypto')
       const nonce = rb(16)
       const { encode: dteEncode, indexToBytes } = require('../src/honey/dte-corpus.ts')
       const index = dteEncode(SAMPLE_CODE, keyResult.value.key)
       const plainBytes = indexToBytes(index)
       const cipher = createCipheriv('aes-256-ctr', keyResult.value.key, nonce)
       const ct = Buffer.concat([cipher.update(plainBytes), cipher.final()])
-      const tag = createHmac('sha256', keyResult.value.macKey)
-        .update(nonce)
-        .update(ct)
-        .digest()
+      const tag = hmac('sha256', keyResult.value.macKey).update(nonce).update(ct).digest()
       const v0Payload = Buffer.concat([nonce, tag, ct])
       const encoded = v0Payload.toString('base64url')
 
@@ -214,6 +236,50 @@ describe('HoneyEngine', () => {
       if (!a.ok || !b.ok) return
 
       expect(a.value.key.equals(b.value.key)).toBe(false)
+    })
+  })
+
+  describe('ML-KEM-768 hybrid', () => {
+    it('toJSON() includes mlkemPublicKey as a non-empty base64url string', () => {
+      const keyResult = deriveSessionKey(PASSPHRASE)
+      expect(keyResult.ok).toBe(true)
+      if (!keyResult.ok) return
+
+      const json = keyResult.value.toJSON()
+      expect(typeof json.mlkemPublicKey).toBe('string')
+      expect(json.mlkemPublicKey.length).toBeGreaterThan(0)
+    })
+
+    it('different sessions produce different ML-KEM public keys (fresh salt)', () => {
+      const a = deriveSessionKey(PASSPHRASE)
+      const b = deriveSessionKey(PASSPHRASE)
+      expect(a.ok && b.ok).toBe(true)
+      if (!a.ok || !b.ok) return
+
+      // Fresh salt each call → distinct KEM keypair
+      expect(a.value.toJSON().mlkemPublicKey).not.toBe(b.value.toJSON().mlkemPublicKey)
+    })
+
+    it('same passphrase + same salt → same ML-KEM public key', () => {
+      const keyResult = deriveSessionKey(PASSPHRASE)
+      expect(keyResult.ok).toBe(true)
+      if (!keyResult.ok) return
+
+      const rederived = deriveFromSalt(PASSPHRASE, keyResult.value.salt)
+      expect(rederived.ok).toBe(true)
+      if (!rederived.ok) return
+
+      expect(keyResult.value.toJSON().mlkemPublicKey).toBe(
+        rederived.value.toJSON().mlkemPublicKey,
+      )
+    })
+
+    it('keyDerivation field reflects hybrid scheme', () => {
+      const keyResult = deriveSessionKey(PASSPHRASE)
+      expect(keyResult.ok).toBe(true)
+      if (!keyResult.ok) return
+
+      expect(keyResult.value.toJSON().keyDerivation).toBe('scrypt-v1+ml-kem-768')
     })
   })
 })
