@@ -47,7 +47,7 @@ Standard mitigations (VPN, contractual DPA, on-premise models) either don't addr
 | Block comments | `/* payment logic */` → replaced with whitespace |
 | Multi-turn history | Fake names are consistent across user **and** assistant turns |
 
-What Anthropic sees is syntactically valid code with a different vocabulary. Every identifier maps to a plausible word from a 256-entry programming vocabulary; numeric fakes stay in the same order of magnitude with the same number of decimal places. Round-trip accuracy is 100%: Claude's response is deobfuscated before being displayed.
+What Anthropic sees is syntactically valid code with a different vocabulary. Every identifier maps to a plausible word from a 267-entry programming vocabulary; numeric fakes stay in the same order of magnitude with the same number of decimal places. Round-trip accuracy is 100%: Claude's response is deobfuscated before being displayed.
 
 ---
 
@@ -157,11 +157,11 @@ A fresh 32-byte random salt is generated each time the proxy starts, providing *
 
 **Layer 2 — Format-Preserving Encryption (`src/honey/fpe.ts`)**
 
-Each user-defined identifier is mapped to a fake name using HMAC-SHA-256 against a 256-word vocabulary:
+Each user-defined identifier is mapped to a fake name using HMAC-SHA-256 against a 267-word vocabulary:
 
 ```
 words      = split(identifier)           # by casing or underscores
-fakeWords  = [VOCAB[HMAC(fpeKey, w) mod 256]  for w in words]
+fakeWords  = [VOCAB[HMAC(fpeKey, w) mod 267]  for w in words]
 fakeId     = reassemble(fakeWords, original_convention)
 ```
 
@@ -188,7 +188,10 @@ fake   = min + (u32 mod (max - min + 1))               # integer
 The engine encrypts a corpus index derived from a code string. The default format (v2) uses **LWE-DTE** — a lattice-based encoder that provides the honey property from the hardness of the Learning With Errors problem:
 
 ```
-LWE parameters: n=16, q=7681, B=5, M=52 (corpus size)
+LWE parameters: n=128, q=7681, B=5, M=53 (corpus size)
+
+Note: deriveSecretVector and derivePublicVector use rejection sampling
+(REJECTION_LIMIT = floor(2^32 / q) * q) to eliminate modular bias.
 
 Encrypt(code, sessionKey):
   index     = DTE.encode(code, key)                # HMAC(key, code) mod M
@@ -236,7 +239,7 @@ The "honey" property (Juels & Ristenpart, EUROCRYPT 2014) means that an adversar
 
 **AES-CTR honey property (v1/v0):** AES-CTR decryption never "fails" (it always produces output bytes), so every candidate passphrase yields a plausible-looking code snippet drawn from the embedded corpus. This provides the classical honey guarantee.
 
-In both cases, the attacker sees many valid-seeming decryptions from the corpus of ~52 real-world OSS snippets and has no way to identify the real one.
+In both cases, the attacker sees many valid-seeming decryptions from the corpus of ~53 real-world OSS snippets and has no way to identify the real one.
 
 ### Post-Quantum Cryptography
 
@@ -246,7 +249,7 @@ The proxy implements four layers of post-quantum protection following the "harve
 |---|---|---|---|
 | Key derivation | scrypt(N=65536) | — | Memory-hard (64 MB), resistant to GPU/ASIC brute-force |
 | Key strengthening | ML-KEM-768 hybrid | FIPS 203 | Quantum-resistant key encapsulation; master key XOR'd with lattice-based shared secret |
-| HE engine | LWE-DTE (n=16, q=7681) | Lattice-based | Honey property from LWE hardness, not just stream-cipher indistinguishability |
+| HE engine | LWE-DTE (n=128, q=7681) | Lattice-based | Honey property from LWE hardness, not just stream-cipher indistinguishability |
 | Audit integrity | SLH-DSA-SHA2-128s | FIPS 205 | Hash-based post-quantum signatures; tamper-evident audit trail survives quantum adversaries |
 
 **Dependency:** [`@noble/post-quantum`](https://github.com/nicklaus/noble-post-quantum) v0.2.x — pure TypeScript, no native bindings. Imports: `ml_kem768` from `@noble/post-quantum/ml-kem`, `slh_dsa_sha2_128s` from `@noble/post-quantum/slh-dsa`.
@@ -319,28 +322,35 @@ honey-encryption-proxy/
 │   ├── honey/
 │   │   ├── key-manager.ts    # scrypt + HKDF + ML-KEM-768 hybrid → three 32-byte sub-keys
 │   │   ├── fpe.ts            # Format-Preserving Encryption: identifiers, numbers,
-│   │   │                     #   string literals; 256-word vocabulary; collision avoidance
+│   │   │                     #   string literals; 267-word vocabulary; collision avoidance
 │   │   ├── dte-corpus.ts     # Distribution-Transforming Encoder (corpus variant)
-│   │   ├── lwe-dte.ts        # LWE-based DTE: n=16, q=7681, B=5; honey via lattice hardness
+│   │   ├── lwe-dte.ts        # LWE-based DTE: n=128, q=7681, B=5; rejection sampling;
+│   │   │                     #   honey via lattice hardness
 │   │   └── engine.ts         # LWE-DTE + AES-CTR HE pipeline (v2/v1/v0 wire formats)
 │   │
 │   ├── ast/
 │   │   ├── extractor.ts      # Comment stripping; fenced code block extraction;
 │   │   │                     #   user-defined identifier token scan
-│   │   └── mapper.ts         # obfuscateText / deobfuscateText high-level API
+│   │   ├── tree-sitter.ts    # web-tree-sitter AST extraction (initTreeSitter,
+│   │   │                     #   extractIdentifiersAST); regex fallback in extractor
+│   │   └── mapper.ts         # obfuscateText / deobfuscateText high-level API;
+│   │                         #   returns Result<MapResult>
 │   │
 │   └── corpus/
 │       ├── index.ts          # Indexed access layer with safe modular wrapping
-│       └── data.ts           # ~52 embedded OSS code snippets (TypeScript, Python,
+│       └── data.ts           # ~53 embedded OSS code snippets (TypeScript, Python,
 │                             #   Rust, Go) used as Honey Encryption decoys
 │
 ├── tests/
 │   ├── honey.test.ts         # HE engine + key derivation + LWE-DTE + versioned format (16 tests)
-│   ├── dte.test.ts           # DTE, FPE, extractor, mapper end-to-end (47 tests)
+│   ├── dte.test.ts           # DTE, FPE, extractor, mapper end-to-end (52 tests)
 │   ├── proxy.test.ts         # Full pipeline integration (11 tests)
 │   ├── logger.test.ts        # Log-level filtering (7 tests)
-│   ├── audit.test.ts         # JSONL audit writer + SPHINCS+ signatures (8 tests)
-│   └── stream-deobfuscator.test.ts  # SSE chunk-boundary handling (7 tests)
+│   ├── audit.test.ts         # JSONL audit writer + SPHINCS+ signatures (9 tests)
+│   ├── stream-deobfuscator.test.ts  # SSE chunk-boundary handling (7 tests)
+│   ├── tree-sitter.test.ts   # AST extraction via web-tree-sitter (45 tests)
+│   ├── config.test.ts        # Env var loading + validation (7 tests — added Phase 2)
+│   └── setup.ts              # Test preload: initializes tree-sitter WASM
 │
 ├── package.json
 └── tsconfig.json
@@ -354,16 +364,17 @@ honey-encryption-proxy/
 | `config.ts` | Loads and validates env vars; returns `Result<Config>` to force explicit error handling |
 | `logger.ts` | Structured JSON logger with level-based filtering (`setLogLevel`/`getLogLevel`); errors go to `stderr`, all others to `stdout` |
 | `types.ts` | All shared interfaces (`Result<T,E>`, `SessionKey`, `IdentifierMapping`, `AuditEntry`) for type-safe error propagation |
-| `audit.ts` | Fire-and-forget JSONL audit writer with SLH-DSA-SHA2-128s (SPHINCS+) tamper-evident signatures; appends metadata-only entries to `~/.honey-proxy/audit.jsonl` |
+| `audit.ts` | Fire-and-forget JSONL audit writer with SLH-DSA-SHA2-128s (SPHINCS+) tamper-evident signatures; canonical JSON field ordering for deterministic signing; appends metadata-only entries to `~/.honey-proxy/audit.jsonl` |
 | `stream-deobfuscator.ts` | Buffers SSE chunks on `\n\n` boundaries so identifiers split across TCP chunks are deobfuscated correctly |
 | `key-manager.ts` | scrypt(N=65536) + HKDF key derivation with optional ML-KEM-768 hybrid strengthening; derives three 32-byte sub-keys; zeroes sensitive material after use |
-| `fpe.ts` | Identifier FPE (HMAC→vocabulary), numeric FPE (HMAC→scaled value), string-literal FPE (exact-match replacement), collision avoidance, reverse mapping |
+| `fpe.ts` | Identifier FPE (HMAC→267-word vocabulary), numeric FPE (HMAC→scaled value), string-literal FPE (exact-match replacement), collision avoidance, reverse mapping |
 | `dte-corpus.ts` | Maps code strings to corpus indices via HMAC; maps corpus indices back to code |
-| `lwe-dte.ts` | LWE-based Distribution-Transforming Encoder (n=16, q=7681, B=5); honey property via lattice hardness |
+| `lwe-dte.ts` | LWE-based Distribution-Transforming Encoder (n=128, q=7681, B=5); rejection sampling eliminates modular bias; honey property via lattice hardness |
 | `engine.ts` | Combines DTE + LWE/AES-CTR + HMAC-SHA256 into a versioned Honey Encryption envelope (v2 LWE-DTE default, v1/v0 AES-CTR backward compat) |
 | `extractor.ts` | Single-pass regex to strip comments (preserving strings), extract fenced code blocks, extract identifier tokens |
-| `mapper.ts` | Orchestrates the full obfuscation pipeline: strip → extract → map → transform; returns `ObfuscationStats` for audit |
-| `corpus/data.ts` | 52 real-world OSS snippets across TypeScript, Python, Rust, Go used as plausible HE decoys |
+| `mapper.ts` | Orchestrates the full obfuscation pipeline: strip → extract → map → transform; returns `Result<MapResult>` with `ObfuscationStats` for audit |
+| `tree-sitter.ts` | web-tree-sitter AST extraction (`initTreeSitter`, `extractIdentifiersAST`); used by `extractor.ts` with regex fallback |
+| `corpus/data.ts` | 53 real-world OSS snippets across TypeScript, Python, Rust, Go used as plausible HE decoys |
 
 ---
 
@@ -390,6 +401,8 @@ honey-encryption-proxy/
 | Audit trail | JSONL log at `~/.honey-proxy/audit.jsonl` records only counts and metadata — never real or fake names |
 | Audit tamper evidence | SLH-DSA-SHA2-128s (FIPS 205) signatures on every audit entry; 7856-byte post-quantum signatures |
 | Wire format evolution | Version byte in HE payloads enables algorithm rotation without breaking stored data |
+| DoS protection | Identifier cap (5 000) → HTTP 413; passthrough body limit (10 MiB) → HTTP 413 |
+| Audit canonicalization | Deterministic alphabetical field ordering in `canonicalizeEntry()` ensures SPHINCS+ signatures are reproducible and verifiable |
 
 ### What is not protected
 
@@ -399,17 +412,15 @@ honey-encryption-proxy/
 | Import paths and file names | Outside the scope of in-prompt fenced code blocks |
 | String literals whose content is not an identifier | Only exact-match identifier values are replaced |
 | Request metadata (timing, token counts, model name) | Visible to Anthropic regardless of obfuscation |
-| Prose text outside fenced code blocks | Left untouched so Claude understands the question context |
+| Prose text outside fenced code blocks | Identifier names echoed in prose **are** deobfuscated in responses; however, prose in outgoing requests is not obfuscated (only code blocks are) |
 | API key | Required by Anthropic; forwarded on every request |
-
-> **Phase 2 note:** Migrating from regex-based extraction to `web-tree-sitter` will enable precise extraction of type parameters, import specifiers, JSX attribute names, and decorator names — closing the remaining gaps in identifier coverage.
 
 ---
 
 ## Development
 
 ```bash
-# Run the full test suite (96 tests across 6 files)
+# Run the full test suite (147 tests across 8 files)
 bun test
 
 # Type-check (zero errors expected; TypeScript strict mode)
@@ -428,6 +439,8 @@ bun test tests/proxy.test.ts                # End-to-end: multi-turn, comment st
 bun test tests/logger.test.ts               # Log-level filtering
 bun test tests/audit.test.ts                # JSONL audit writer
 bun test tests/stream-deobfuscator.test.ts  # SSE chunk-boundary deobfuscation
+bun test tests/tree-sitter.test.ts          # AST extraction via web-tree-sitter
+bun test tests/config.test.ts               # Env var loading + validation
 ```
 
 ### Manual end-to-end inspection
@@ -527,7 +540,7 @@ Every proxied request appends a JSONL entry to `~/.honey-proxy/audit.jsonl` cont
 
 **Security invariant:** The audit log never contains real identifier names, fake names, or code content — only counts and timing.
 
-**Tamper-evident signing:** Each audit entry is signed with SLH-DSA-SHA2-128s (FIPS 205), a hash-based post-quantum signature scheme. The signing key is derived via `HKDF(macKey, macKey, "honey:slh-dsa:v1", 48)` at proxy startup. Signatures are ~7856 bytes (~10.5 KB base64url). Signing is fire-and-forget — it does not block request processing.
+**Tamper-evident signing:** Each audit entry is signed with SLH-DSA-SHA2-128s (FIPS 205), a hash-based post-quantum signature scheme. The signing key is derived via `HKDF(macKey, "honey:slh-dsa:salt", "honey:slh-dsa:v1", 48)` at proxy startup. Signatures are ~7856 bytes (~10.5 KB base64url). Signing is fire-and-forget — it does not block request processing.
 
 **Offline verification:** Extract the `signature` field, reconstruct the entry without it, and verify against the session's SLH-DSA public key (logged at startup) to detect any post-hoc modification.
 
@@ -542,7 +555,7 @@ SSE responses from Anthropic are deobfuscated using a `StreamDeobfuscator` that 
 | Phase | Status | Deliverable |
 |---|---|---|
 | **1** | ✅ Complete | scrypt/HKDF key derivation, ML-KEM-768 hybrid, FPE identifier mapping, Bun proxy with SSE streaming |
-| **2** | ✅ Complete | Comment/numeric/string FPE, LWE-DTE v2 engine, SPHINCS+ audit signing, pentest hardening; `web-tree-sitter` AST extraction and extended corpus (~10 000 snippets from GitHub API) pending |
+| **2** | ✅ Complete | Comment/numeric/string FPE, LWE-DTE v2 engine (n=128, rejection sampling), SPHINCS+ audit signing with canonical JSON, `web-tree-sitter` AST extraction, security hardening (identifier cap, body limit, audit canonicalization) |
 | **3** | Planned | Arithmetic Coding DTE backed by a local Ollama model — statistically optimal HE-IND guarantee replacing the HMAC corpus DTE |
 | **4** | Planned | TEE (Trusted Execution Environment) deployment; proxy attestation so the operator can prove to users that the proxy binary has not been tampered with |
 
@@ -580,10 +593,10 @@ With a wrong password `pw′`, `StreamCipher(c, KDF(pw′))` produces a differen
 
 | HE component | Implementation |
 |---|---|
-| Message distribution | Space of open-source code snippets (the embedded corpus of 52 entries) |
+| Message distribution | Space of open-source code snippets (the embedded corpus of 53 entries) |
 | DTE encode | `HMAC-SHA256(key, code) mod corpus_size` → corpus index |
 | DTE decode | `corpus[index mod corpus_size]` → code snippet |
-| HE cipher (v2, default) | LWE-DTE (n=16, q=7681, B=5) — honey from lattice hardness |
+| HE cipher (v2, default) | LWE-DTE (n=128, q=7681, B=5) — honey from lattice hardness; rejection sampling |
 | HE cipher (v1/v0, compat) | AES-256-CTR |
 | Integrity | HMAC-SHA-256 over nonce + ciphertext/LWE scalar |
 | Memory-hard KDF | scrypt(N=65536, r=8, p=1) — 64 MB RAM |
