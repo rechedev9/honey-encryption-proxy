@@ -1,8 +1,9 @@
 /**
- * Integration tests for the proxy message transformation pipeline.
+ * Unit tests for the obfuscation pipeline (mapper-level).
  *
  * These tests exercise the full obfuscate → deobfuscate cycle at the message
  * level, without starting an actual HTTP server or calling Anthropic.
+ * For HTTP-level integration tests, see proxy-integration.test.ts.
  */
 
 import { describe, it, expect } from 'bun:test'

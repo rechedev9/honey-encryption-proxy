@@ -21,7 +21,7 @@ export default [
   },
   // Test file relaxations (see CLAUDE.md Type Strictness section)
   {
-    files: ['tests/**/*.test.ts', 'tests/setup.ts'],
+    files: ['tests/**/*.test.ts', 'tests/setup.ts', 'tests/helpers/**/*.ts'],
     rules: {
       // CLAUDE.md: "as Type assertions allowed in test files for test fixtures"
       '@typescript-eslint/consistent-type-assertions': 'off',
@@ -42,6 +42,10 @@ export default [
       // test assertion patterns like await expect(fn()).resolves.toBeUndefined()
       '@typescript-eslint/await-thenable': 'off',
       '@typescript-eslint/no-confusing-void-expression': 'off',
+      // HTTP header names in object literals (content-type, anthropic-version)
+      '@typescript-eslint/naming-convention': 'off',
+      // test helpers returning fetch() are implicitly async-returning
+      '@typescript-eslint/promise-function-async': 'off',
     },
   },
 ]

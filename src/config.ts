@@ -47,7 +47,7 @@ export function loadConfig(): Result<Config> {
 
   const portStr = process.env.PROXY_PORT ?? String(DEFAULT_PORT)
   const port = parseInt(portStr, 10)
-  if (isNaN(port) || port < 1 || port > 65535) {
+  if (isNaN(port) || port < 0 || port > 65535) {
     return err(new Error(`PROXY_PORT must be a valid port number, got: ${portStr}`))
   }
 

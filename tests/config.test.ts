@@ -112,12 +112,12 @@ describe('loadConfig', () => {
       }
     })
 
-    it('rejects port 0', () => {
+    it('accepts port 0 (OS-assigned)', () => {
       process.env.PROXY_PORT = '0'
       const result = loadConfig()
-      expect(result.ok).toBe(false)
-      if (!result.ok) {
-        expect(result.error.message).toContain('PROXY_PORT')
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.value.proxyPort).toBe(0)
       }
     })
 
