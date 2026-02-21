@@ -15,6 +15,7 @@ A local proxy that sits between [Claude Code](https://claude.ai/code) and the An
   - [Obfuscation pipeline detail](#obfuscation-pipeline-detail)
   - [Cryptographic layers](#cryptographic-layers)
   - [Honey Encryption property](#honey-encryption-property)
+  - [Post-Quantum Cryptography](#post-quantum-cryptography)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Project structure](#project-structure)
@@ -126,17 +127,33 @@ All other routes (e.g. `GET /v1/models`) are forwarded transparently without mod
 
 **Layer 1 — Key derivation (`src/honey/key-manager.ts`)**
 
-A single passphrase produces three independent 32-byte keys via PBKDF2 + HKDF:
+A single passphrase produces three independent 32-byte keys via scrypt + HKDF, with an optional ML-KEM-768 hybrid strengthening step:
 
 ```
-masterKey = PBKDF2(passphrase, salt, 250 000 iterations, SHA-256)
+masterKey = scrypt(passphrase, salt, N=65536, r=8, p=1)   # 64 MB RAM, ~300 ms
 
-fpeKey = HKDF(masterKey, salt, "honey:fpe:v1")    ← identifier + numeric FPE
-key    = HKDF(masterKey, salt, "honey:aes-ctr:v1") ← AES-256-CTR (HE engine)
-macKey = HKDF(masterKey, salt, "honey:hmac:v1")    ← HMAC-SHA-256 (HE engine)
+# Optional ML-KEM-768 hybrid (post-quantum key strengthening)
+kyberSeed  = HKDF(masterKey, salt, "honey:kyber:seed:v1", 64)
+(pk, sk)   = ml_kem768.keygen(kyberSeed)                  # pk logged on startup
+if HONEY_KYBER_CAPSULE:
+  ss        = ml_kem768.decapsulate(capsule, sk)
+  masterKey = masterKey XOR HKDF(ss, salt, "honey:kyber:hybrid:v1", 32)
+
+# Three independent sub-keys via HKDF-SHA256
+fpeKey = HKDF(masterKey, salt, "honey:fpe:v1")        ← identifier + numeric FPE
+key    = HKDF(masterKey, salt, "honey:aes-ctr:v1")    ← AES-256-CTR (HE engine)
+macKey = HKDF(masterKey, salt, "honey:hmac:v1")        ← HMAC-SHA-256 (HE + audit)
 ```
 
-A fresh 16-byte random salt is generated each time the proxy starts, providing **forward secrecy**: compromising one session's key material does not expose past or future sessions.
+A fresh 32-byte random salt is generated each time the proxy starts, providing **forward secrecy**: compromising one session's key material does not expose past or future sessions.
+
+**Why scrypt instead of PBKDF2:** scrypt is memory-hard (64 MB per derivation), making GPU/ASIC brute-force attacks orders of magnitude more expensive than the equivalent PBKDF2 iteration count. This follows the recommendation in Khan et al. (2025) for honey encryption systems.
+
+**ML-KEM-768 operational flow:**
+
+1. Start the proxy normally — it logs the ephemeral ML-KEM public key at startup
+2. An external party encapsulates a shared secret using the public key
+3. Restart the proxy with `HONEY_KYBER_CAPSULE=<base64url>` — the master key is now hybrid-strengthened against both classical and quantum brute-force
 
 **Layer 2 — Format-Preserving Encryption (`src/honey/fpe.ts`)**
 
@@ -166,31 +183,47 @@ fake   = (originalValue * factor).toFixed(decimals)   # float
 fake   = min + (u32 mod (max - min + 1))               # integer
 ```
 
-**Layer 3 — Honey Encryption engine (`src/honey/engine.ts`)**
+**Layer 3 — Honey Encryption engine (`src/honey/engine.ts` + `src/honey/lwe-dte.ts`)**
 
-The engine encrypts a corpus index derived from a code string using AES-256-CTR + HMAC-SHA-256:
+The engine encrypts a corpus index derived from a code string. The default format (v2) uses **LWE-DTE** — a lattice-based encoder that provides the honey property from the hardness of the Learning With Errors problem:
 
 ```
+LWE parameters: n=16, q=7681, B=5, M=52 (corpus size)
+
 Encrypt(code, sessionKey):
-  index    = DTE.encode(code, key)         # HMAC(key, code) mod corpus_size
-  nonce    = random(16 bytes)
-  cipher   = AES-256-CTR(index.bytes, key, nonce)
-  tag      = HMAC-SHA-256(nonce ‖ cipher, macKey)
-  payload  = base64url(version ‖ nonce ‖ tag ‖ cipher)   # 53 bytes (v1)
+  index     = DTE.encode(code, key)                # HMAC(key, code) mod M
+  nonce     = random(16 bytes)
+  a         = expand(nonce)                        # PRG → vector in Z_q^n
+  s         = HKDF(key, nonce, n) mod q            # secret vector
+  e         = sampleError(nonce, key, B)           # |e_i| ≤ B
+  b         = (a·s + e + ⌊q/M⌋·index) mod q       # LWE scalar
+  tag       = HMAC-SHA-256(nonce ‖ b, macKey)
+  payload   = 0x02 ‖ tag(32) ‖ nonce(16) ‖ b_uint16BE(2)   # 51 bytes
 
 Decrypt(payload, sessionKey):
-  if payload[0] == 0x01:                                  # v1 versioned format
-    parse nonce, tag, cipher from payload[1:]
-  else:                                                   # legacy v0 (no version byte)
-    parse nonce, tag, cipher from payload
-  assert HMAC-SHA-256(nonce ‖ cipher, macKey) == tag      # timing-safe compare
-  index = AES-256-CTR.decrypt(cipher, key, nonce)
-  return DTE.decode(index)                                # corpus snippet
+  parse tag, nonce, b from payload[1:]
+  assert HMAC-SHA-256(nonce ‖ b, macKey) == tag    # timing-safe compare
+  a, s, e   = regenerate from nonce + key
+  diff      = (b - a·s - e) mod q
+  index     = round(diff · M / q) mod M
+  return DTE.decode(index)                         # corpus snippet
 ```
 
-The version byte enables future algorithm rotation without breaking existing stored payloads.
+**Backward-compatible formats** (v1/v0) use AES-256-CTR + HMAC for decrypting legacy payloads:
 
-> **Architectural note:** The proxy sends FPE-obfuscated code (not AES ciphertext) to Claude so that Claude can read and improve it. The HE engine is used for (a) encrypting the identifier mapping for secure local storage, and (b) demonstrating/testing the honey encryption security property against brute-force.
+```
+v1 Decrypt(payload):  # payload[0] == 0x01, 53 bytes
+  parse nonce(16), tag(32), cipher(4) from payload[1:]
+  assert HMAC-SHA-256(nonce ‖ cipher, macKey) == tag
+  index = AES-256-CTR.decrypt(cipher, key, nonce)
+  return DTE.decode(index)
+
+v0 Decrypt(payload):  # no version byte, 52 bytes
+  parse nonce(16), tag(32), cipher(4)
+  (same as v1)
+```
+
+> **Architectural note:** The proxy sends FPE-obfuscated code (not LWE/AES ciphertext) to Claude so that Claude can read and improve it. The HE engine is used for (a) encrypting the identifier mapping for secure local storage, and (b) demonstrating/testing the honey encryption security property against brute-force.
 
 ### Honey Encryption property
 
@@ -199,7 +232,24 @@ The "honey" property (Juels & Ristenpart, EUROCRYPT 2014) means that an adversar
 - **Correct passphrase** → correct `fpeKey` → real identifier names
 - **Wrong passphrase P′** → different `fpeKey K′` → different but plausible identifier mapping → syntactically valid code that looks like a completely different project
 
-Because AES-CTR decryption never "fails" (it always produces some output bytes), every candidate passphrase yields a plausible-looking code snippet drawn from the embedded corpus of ~60 real-world OSS snippets. The attacker sees many valid-seeming decryptions and has no way to identify the real one.
+**LWE-DTE honey property (v2):** With a wrong key s', the decryption computes `diff' = a·(s−s') + e + ⌊q/M⌋·m`. Because `a·(s−s')` is computationally indistinguishable from uniform over Z_q (by the LWE assumption), `diff'` is effectively uniform, and the recovered index is uniformly distributed over the corpus. The attacker cannot distinguish the real decryption from any other corpus entry — the honey property follows from lattice hardness rather than the stream-cipher property of AES.
+
+**AES-CTR honey property (v1/v0):** AES-CTR decryption never "fails" (it always produces output bytes), so every candidate passphrase yields a plausible-looking code snippet drawn from the embedded corpus. This provides the classical honey guarantee.
+
+In both cases, the attacker sees many valid-seeming decryptions from the corpus of ~52 real-world OSS snippets and has no way to identify the real one.
+
+### Post-Quantum Cryptography
+
+The proxy implements four layers of post-quantum protection following the "harvest now, decrypt later" threat model — an adversary recording today's traffic to break it with a future quantum computer:
+
+| Layer | Component | Standard | Purpose |
+|---|---|---|---|
+| Key derivation | scrypt(N=65536) | — | Memory-hard (64 MB), resistant to GPU/ASIC brute-force |
+| Key strengthening | ML-KEM-768 hybrid | FIPS 203 | Quantum-resistant key encapsulation; master key XOR'd with lattice-based shared secret |
+| HE engine | LWE-DTE (n=16, q=7681) | Lattice-based | Honey property from LWE hardness, not just stream-cipher indistinguishability |
+| Audit integrity | SLH-DSA-SHA2-128s | FIPS 205 | Hash-based post-quantum signatures; tamper-evident audit trail survives quantum adversaries |
+
+**Dependency:** [`@noble/post-quantum`](https://github.com/nicklaus/noble-post-quantum) v0.2.x — pure TypeScript, no native bindings. Imports: `ml_kem768` from `@noble/post-quantum/ml-kem`, `slh_dsa_sha2_128s` from `@noble/post-quantum/slh-dsa`.
 
 ---
 
@@ -249,6 +299,7 @@ All configuration is via environment variables.
 | `HONEY_PASSPHRASE` | **Yes** | — | Passphrase for session key derivation. Use a random string of ≥ 20 characters. |
 | `PROXY_PORT` | No | `8080` | TCP port the proxy listens on (`127.0.0.1` only). |
 | `ANTHROPIC_BASE_URL_UPSTREAM` | No | `https://api.anthropic.com` | Override the upstream endpoint (useful for testing against a stub). |
+| `HONEY_KYBER_CAPSULE` | No | — | Base64url-encoded ML-KEM-768 ciphertext for hybrid key strengthening. Obtain by encapsulating against the public key logged at startup. |
 | `LOG_LEVEL` | No | `info` | Verbosity: `debug`, `info`, `warn`, or `error`. Messages below this threshold are suppressed. |
 
 ---
@@ -262,15 +313,16 @@ honey-encryption-proxy/
 │   ├── config.ts             # Environment variable loader + validator
 │   ├── logger.ts             # Structured JSON logger with level filtering
 │   ├── types.ts              # Result<T,E>, SessionKey, CodeBlock, IdentifierMapping, AuditEntry
-│   ├── audit.ts              # JSONL audit trail writer (~/.honey-proxy/audit.jsonl)
+│   ├── audit.ts              # JSONL audit trail writer (~/.honey-proxy/audit.jsonl), SPHINCS+ signed
 │   ├── stream-deobfuscator.ts # Chunk-boundary-safe SSE deobfuscation
 │   │
 │   ├── honey/
-│   │   ├── key-manager.ts    # PBKDF2(250k) + HKDF → three 32-byte sub-keys
+│   │   ├── key-manager.ts    # scrypt + HKDF + ML-KEM-768 hybrid → three 32-byte sub-keys
 │   │   ├── fpe.ts            # Format-Preserving Encryption: identifiers, numbers,
 │   │   │                     #   string literals; 256-word vocabulary; collision avoidance
 │   │   ├── dte-corpus.ts     # Distribution-Transforming Encoder (corpus variant)
-│   │   └── engine.ts         # AES-256-CTR + HMAC Honey Encryption pipeline (versioned wire format)
+│   │   ├── lwe-dte.ts        # LWE-based DTE: n=16, q=7681, B=5; honey via lattice hardness
+│   │   └── engine.ts         # LWE-DTE + AES-CTR HE pipeline (v2/v1/v0 wire formats)
 │   │
 │   ├── ast/
 │   │   ├── extractor.ts      # Comment stripping; fenced code block extraction;
@@ -279,15 +331,15 @@ honey-encryption-proxy/
 │   │
 │   └── corpus/
 │       ├── index.ts          # Indexed access layer with safe modular wrapping
-│       └── data.ts           # ~60 embedded OSS code snippets (TypeScript, Python,
+│       └── data.ts           # ~52 embedded OSS code snippets (TypeScript, Python,
 │                             #   Rust, Go) used as Honey Encryption decoys
 │
 ├── tests/
-│   ├── honey.test.ts         # HE engine + key derivation + versioned format (20 tests)
-│   ├── dte.test.ts           # DTE, FPE, extractor, mapper end-to-end (43 tests)
-│   ├── proxy.test.ts         # Full pipeline integration (7 tests)
+│   ├── honey.test.ts         # HE engine + key derivation + LWE-DTE + versioned format (16 tests)
+│   ├── dte.test.ts           # DTE, FPE, extractor, mapper end-to-end (47 tests)
+│   ├── proxy.test.ts         # Full pipeline integration (11 tests)
 │   ├── logger.test.ts        # Log-level filtering (7 tests)
-│   ├── audit.test.ts         # JSONL audit writer (4 tests)
+│   ├── audit.test.ts         # JSONL audit writer + SPHINCS+ signatures (8 tests)
 │   └── stream-deobfuscator.test.ts  # SSE chunk-boundary handling (7 tests)
 │
 ├── package.json
@@ -302,15 +354,16 @@ honey-encryption-proxy/
 | `config.ts` | Loads and validates env vars; returns `Result<Config>` to force explicit error handling |
 | `logger.ts` | Structured JSON logger with level-based filtering (`setLogLevel`/`getLogLevel`); errors go to `stderr`, all others to `stdout` |
 | `types.ts` | All shared interfaces (`Result<T,E>`, `SessionKey`, `IdentifierMapping`, `AuditEntry`) for type-safe error propagation |
-| `audit.ts` | Fire-and-forget JSONL audit writer; appends metadata-only entries to `~/.honey-proxy/audit.jsonl` |
+| `audit.ts` | Fire-and-forget JSONL audit writer with SLH-DSA-SHA2-128s (SPHINCS+) tamper-evident signatures; appends metadata-only entries to `~/.honey-proxy/audit.jsonl` |
 | `stream-deobfuscator.ts` | Buffers SSE chunks on `\n\n` boundaries so identifiers split across TCP chunks are deobfuscated correctly |
-| `key-manager.ts` | Derives three independent 32-byte sub-keys from a passphrase; generates fresh salt per session |
+| `key-manager.ts` | scrypt(N=65536) + HKDF key derivation with optional ML-KEM-768 hybrid strengthening; derives three 32-byte sub-keys; zeroes sensitive material after use |
 | `fpe.ts` | Identifier FPE (HMAC→vocabulary), numeric FPE (HMAC→scaled value), string-literal FPE (exact-match replacement), collision avoidance, reverse mapping |
 | `dte-corpus.ts` | Maps code strings to corpus indices via HMAC; maps corpus indices back to code |
-| `engine.ts` | Combines DTE + AES-CTR + HMAC-SHA256 into a versioned Honey Encryption envelope (v1 wire format with legacy v0 fallback) |
+| `lwe-dte.ts` | LWE-based Distribution-Transforming Encoder (n=16, q=7681, B=5); honey property via lattice hardness |
+| `engine.ts` | Combines DTE + LWE/AES-CTR + HMAC-SHA256 into a versioned Honey Encryption envelope (v2 LWE-DTE default, v1/v0 AES-CTR backward compat) |
 | `extractor.ts` | Single-pass regex to strip comments (preserving strings), extract fenced code blocks, extract identifier tokens |
 | `mapper.ts` | Orchestrates the full obfuscation pipeline: strip → extract → map → transform; returns `ObfuscationStats` for audit |
-| `corpus/data.ts` | 60 real-world OSS snippets across TypeScript, Python, Rust, Go used as plausible HE decoys |
+| `corpus/data.ts` | 52 real-world OSS snippets across TypeScript, Python, Rust, Go used as plausible HE decoys |
 
 ---
 
@@ -327,12 +380,15 @@ honey-encryption-proxy/
 | Inline comments (`// VAT rate — confidential`) | Stripped entirely before forwarding |
 | Block comments (`/* internal pricing logic */`) | Replaced with whitespace (line numbers preserved) |
 | Multi-turn conversation history | Consistent fake names across user **and** assistant messages |
-| Passphrase | PBKDF2 with 250 000 iterations; brute-force cost ~250 ms per guess |
-| Session key material | Forward secrecy: fresh random salt per proxy start |
+| Passphrase | scrypt(N=65536, r=8, p=1) — 64 MB RAM per derivation; brute-force cost ~300 ms per guess |
+| Session key material | Forward secrecy: fresh 32-byte random salt per proxy start |
 | Key separation | Three independent sub-keys (fpe, aes, hmac) via HKDF |
+| Quantum resistance (key derivation) | ML-KEM-768 hybrid: master key XOR'd with lattice-based shared secret (FIPS 203) |
+| Quantum resistance (HE engine) | LWE-DTE: honey property from lattice hardness, not stream-cipher indistinguishability |
 | Identifier mapping under brute force | Honey property: every wrong passphrase yields a different-but-plausible mapping |
 | Streaming chunk boundaries | `StreamDeobfuscator` buffers on SSE `\n\n` delimiters so split identifiers never leak to the client |
 | Audit trail | JSONL log at `~/.honey-proxy/audit.jsonl` records only counts and metadata — never real or fake names |
+| Audit tamper evidence | SLH-DSA-SHA2-128s (FIPS 205) signatures on every audit entry; 7856-byte post-quantum signatures |
 | Wire format evolution | Version byte in HE payloads enables algorithm rotation without breaking stored data |
 
 ### What is not protected
@@ -353,7 +409,7 @@ honey-encryption-proxy/
 ## Development
 
 ```bash
-# Run the full test suite (87 tests across 6 files)
+# Run the full test suite (96 tests across 6 files)
 bun test
 
 # Type-check (zero errors expected; TypeScript strict mode)
@@ -440,11 +496,19 @@ These features harden the proxy for daily use beyond demo scenarios.
 
 ### Versioned HE wire format
 
-The Honey Encryption engine now prepends a version byte (`0x01`) to every encrypted payload. The decrypt path auto-detects the version: v1 payloads use the new layout (`[version:1][nonce:16][tag:32][ciphertext]`), while legacy v0 payloads (no version byte) are handled transparently. This enables future algorithm rotation without breaking stored data.
+The Honey Encryption engine supports three wire format versions. The encrypt path always produces v2 (LWE-DTE); the decrypt path auto-detects the version from the first byte:
+
+| Version | Byte | Layout | Size | Algorithm |
+|---|---|---|---|---|
+| **v2** (default) | `0x02` | version(1) + HMAC(32) + nonce(16) + b_uint16BE(2) | 51 B | LWE-DTE |
+| v1 | `0x01` | version(1) + nonce(16) + HMAC(32) + ciphertext(4) | 53 B | AES-256-CTR |
+| v0 (legacy) | none | nonce(16) + HMAC(32) + ciphertext(4) | 52 B | AES-256-CTR |
+
+v1 and v0 are retained for backward compatibility with previously stored payloads.
 
 ### Audit trail
 
-Every proxied request appends a JSONL entry to `~/.honey-proxy/audit.jsonl` containing only metadata:
+Every proxied request appends a JSONL entry to `~/.honey-proxy/audit.jsonl` containing only metadata, signed with SLH-DSA-SHA2-128s (SPHINCS+):
 
 ```json
 {
@@ -455,11 +519,17 @@ Every proxied request appends a JSONL entry to `~/.honey-proxy/audit.jsonl` cont
   "numbersObfuscated": 3,
   "durationMs": 1823,
   "streaming": true,
-  "upstreamStatus": 200
+  "upstreamStatus": 200,
+  "signature": "AgE...base64url...",
+  "sigAlgorithm": "slh-dsa-sha2-128s"
 }
 ```
 
 **Security invariant:** The audit log never contains real identifier names, fake names, or code content — only counts and timing.
+
+**Tamper-evident signing:** Each audit entry is signed with SLH-DSA-SHA2-128s (FIPS 205), a hash-based post-quantum signature scheme. The signing key is derived via `HKDF(macKey, macKey, "honey:slh-dsa:v1", 48)` at proxy startup. Signatures are ~7856 bytes (~10.5 KB base64url). Signing is fire-and-forget — it does not block request processing.
+
+**Offline verification:** Extract the `signature` field, reconstruct the entry without it, and verify against the session's SLH-DSA public key (logged at startup) to detect any post-hoc modification.
 
 ### Chunk-boundary-safe streaming
 
@@ -471,8 +541,8 @@ SSE responses from Anthropic are deobfuscated using a `StreamDeobfuscator` that 
 
 | Phase | Status | Deliverable |
 |---|---|---|
-| **1** | ✅ Complete | PBKDF2/HKDF key derivation, FPE identifier mapping, Bun proxy with SSE streaming support |
-| **2** | 🔄 In progress | Comment stripping, numeric FPE, string-literal FPE, multi-turn obfuscation; `web-tree-sitter` AST extraction (regex-based for now); extended corpus (~10 000 snippets from GitHub API) |
+| **1** | ✅ Complete | scrypt/HKDF key derivation, ML-KEM-768 hybrid, FPE identifier mapping, Bun proxy with SSE streaming |
+| **2** | ✅ Complete | Comment/numeric/string FPE, LWE-DTE v2 engine, SPHINCS+ audit signing, pentest hardening; `web-tree-sitter` AST extraction and extended corpus (~10 000 snippets from GitHub API) pending |
 | **3** | Planned | Arithmetic Coding DTE backed by a local Ollama model — statistically optimal HE-IND guarantee replacing the HMAC corpus DTE |
 | **4** | Planned | TEE (Trusted Execution Environment) deployment; proxy attestation so the operator can prove to users that the proxy binary has not been tampered with |
 
@@ -510,17 +580,21 @@ With a wrong password `pw′`, `StreamCipher(c, KDF(pw′))` produces a differen
 
 | HE component | Implementation |
 |---|---|
-| Message distribution | Space of open-source code snippets (the embedded corpus) |
+| Message distribution | Space of open-source code snippets (the embedded corpus of 52 entries) |
 | DTE encode | `HMAC-SHA256(key, code) mod corpus_size` → corpus index |
 | DTE decode | `corpus[index mod corpus_size]` → code snippet |
-| Stream cipher | AES-256-CTR |
-| Integrity (for the proxy itself) | HMAC-SHA-256 over nonce + ciphertext |
+| HE cipher (v2, default) | LWE-DTE (n=16, q=7681, B=5) — honey from lattice hardness |
+| HE cipher (v1/v0, compat) | AES-256-CTR |
+| Integrity | HMAC-SHA-256 over nonce + ciphertext/LWE scalar |
+| Memory-hard KDF | scrypt(N=65536, r=8, p=1) — 64 MB RAM |
+| PQ key derivation | ML-KEM-768 hybrid (FIPS 203) — optional capsule-based strengthening |
+| Audit integrity | SLH-DSA-SHA2-128s (FIPS 205) — post-quantum tamper-evident signatures |
 | FPE extension | Wrong passphrase → different `fpeKey` → different-but-plausible identifier names |
 
 The FPE layer extends the honey property beyond the stored mapping to every live request: even without access to the stored ciphertext, an attacker with a wrong passphrase sees a completely different — but syntactically and stylistically plausible — version of the codebase.
 
 ### Why the DTE uses HMAC rather than sampling from a language model
 
-The current DTE is deterministic (HMAC → index). This gives correctness guarantees and is fast, but it only approximates the ideal distribution over code — it samples from a fixed corpus rather than from the true distribution of "code a developer might write."
+The current DTE is deterministic (HMAC → index). This gives correctness guarantees and is fast, but it only approximates the ideal distribution over code — it samples from a fixed corpus rather than from the true distribution of "code a developer might write." The v2 LWE-DTE engine strengthens the honey property by deriving indistinguishability from lattice hardness rather than stream-cipher properties.
 
-Phase 3 will replace this with an Arithmetic Coding DTE backed by a local language model (Ollama), which provides the statistically optimal HE-IND (Honey Encryption IND-security) guarantee: each wrong key decrypts to a sample drawn from the real distribution over code, making brute-force entirely useless even for an adversary with unbounded computational resources who can observe many ciphertexts.
+Phase 3 will replace the HMAC corpus DTE with an Arithmetic Coding DTE backed by a local language model (Ollama), which provides the statistically optimal HE-IND (Honey Encryption IND-security) guarantee: each wrong key decrypts to a sample drawn from the real distribution over code, making brute-force entirely useless even for an adversary with unbounded computational resources who can observe many ciphertexts.

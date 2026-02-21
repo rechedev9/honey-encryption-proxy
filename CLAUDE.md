@@ -12,7 +12,7 @@ A Honey Encryption proxy for Claude Code. It sits between the Claude Code CLI an
 |---|---|
 | Run proxy | `ANTHROPIC_API_KEY=sk-ant-... HONEY_PASSPHRASE=secret bun run src/proxy.ts` |
 | Type check | `bun run typecheck` |
-| Tests (all 87) | `bun test` |
+| Tests (all 96) | `bun test` |
 | Single test file | `bun test tests/honey.test.ts` |
 | CI (typecheck + tests) | `bun run ci` |
 | Build | `bun build src/proxy.ts --outdir dist --target bun` |
@@ -30,11 +30,11 @@ Claude Code ← Proxy ← [deobfuscate response] ← Anthropic
 
 ### Three-layer crypto stack
 
-1. **Key derivation** (`src/honey/key-manager.ts`) — PBKDF2(250k) + HKDF produces three independent 32-byte sub-keys (`fpeKey`, `key`, `macKey`) from a single passphrase. Fresh random salt per proxy start (forward secrecy).
+1. **Key derivation** (`src/honey/key-manager.ts`) — scrypt(N=65536, r=8, p=1) + HKDF produces three independent 32-byte sub-keys (`fpeKey`, `key`, `macKey`) from a single passphrase. Optional ML-KEM-768 hybrid key strengthening via `HONEY_KYBER_CAPSULE` env var. Fresh 32-byte random salt per proxy start (forward secrecy).
 
 2. **FPE** (`src/honey/fpe.ts`) — HMAC-SHA256 maps each identifier word to a 256-word vocabulary. Convention-preserving (camelCase→camelCase, snake_case→snake_case). Numeric literals get HMAC-derived scale factors. String literals with identifier values get exact-match replacement. Collision avoidance via up to 16 retry offsets.
 
-3. **Honey Encryption engine** (`src/honey/engine.ts` + `src/honey/dte-corpus.ts`) — AES-256-CTR + HMAC with versioned wire format (v1 with v0 fallback). The DTE maps code→corpus index via HMAC. **Not used in the proxy pipeline** — exists to demonstrate/test the honey property and for future secure storage of mappings. Claude receives FPE'd code, not ciphertext.
+3. **Honey Encryption engine** (`src/honey/engine.ts` + `src/honey/lwe-dte.ts` + `src/honey/dte-corpus.ts`) — v2 LWE-DTE + HMAC (default), with v1/v0 AES-256-CTR backward compat. LWE params: n=16, q=7681, B=5. The DTE maps code→corpus index via HMAC. **Not used in the proxy pipeline** — exists to demonstrate/test the honey property and for future secure storage of mappings. Claude receives FPE'd code, not ciphertext.
 
 ### Obfuscation pipeline (`src/ast/mapper.ts` orchestrates)
 
@@ -48,13 +48,14 @@ Claude Code ← Proxy ← [deobfuscate response] ← Anthropic
 
 ### Config
 
-All via env vars. Required: `ANTHROPIC_API_KEY`, `HONEY_PASSPHRASE`. Optional: `PROXY_PORT` (default 8080), `ANTHROPIC_BASE_URL_UPSTREAM`, `LOG_LEVEL`. Config is loaded as `Result<Config>` — forced error handling.
+All via env vars. Required: `ANTHROPIC_API_KEY`, `HONEY_PASSPHRASE`. Optional: `PROXY_PORT` (default 8080), `ANTHROPIC_BASE_URL_UPSTREAM`, `LOG_LEVEL`, `HONEY_KYBER_CAPSULE` (base64url ML-KEM-768 ciphertext for hybrid key strengthening). Config is loaded as `Result<Config>` — forced error handling.
 
 ## Key Patterns
 
 - **`Result<T, E>`** in `src/types.ts` — used for all fallible operations (`ok(value)` / `err(error)`). Check `.ok` before accessing `.value`.
 - **Structured JSON logger** (`src/logger.ts`) — use `logger.debug/info/warn/error()`, never `console.log`.
-- **Audit trail** (`src/audit.ts`) — fire-and-forget JSONL to `~/.honey-proxy/audit.jsonl`. Metadata only, never real/fake names.
+- **Audit trail** (`src/audit.ts`) — fire-and-forget JSONL to `~/.honey-proxy/audit.jsonl`. Metadata only, never real/fake names. Signed with SLH-DSA-SHA2-128s (SPHINCS+) for post-quantum tamper evidence.
+- **ML-KEM-768 public key** — logged at startup for external encapsulation; hybrid key strengthening via `HONEY_KYBER_CAPSULE`.
 - **`ReadonlyMap` / `ReadonlySet`** everywhere for identifier mappings — mutations happen only during construction.
 
 ## Gotchas
@@ -66,7 +67,7 @@ All via env vars. Required: `ANTHROPIC_API_KEY`, `HONEY_PASSPHRASE`. Optional: `
 
 ## Phase Roadmap
 
-1. ✅ FPE + proxy with SSE streaming
-2. 🔄 Comment stripping, numeric/string FPE, corpus DTE (done; `web-tree-sitter` AST and larger corpus pending)
+1. ✅ scrypt/HKDF, ML-KEM-768 hybrid, FPE + proxy with SSE streaming
+2. ✅ Comment/numeric/string FPE, LWE-DTE v2 engine, SPHINCS+ audit signing, pentest hardening (done; `web-tree-sitter` AST and larger corpus pending)
 3. Planned — Arithmetic Coding DTE with Ollama (local LLM distribution)
 4. Planned — TEE deployment
