@@ -61,8 +61,8 @@ describe('Audit logger', () => {
     const lines = readFileSync(auditFile, 'utf-8').trim().split('\n')
     expect(lines.length).toBe(2)
 
-    const first = JSON.parse(lines[0] as string) as AuditEntry
-    const second = JSON.parse(lines[1] as string) as AuditEntry
+    const first = JSON.parse(lines[0]!) as AuditEntry
+    const second = JSON.parse(lines[1]!) as AuditEntry
     expect(first.requestId).toBe('req-1')
     expect(second.requestId).toBe('req-2')
   })
@@ -128,8 +128,8 @@ describe('Audit logger', () => {
       await writeAuditEntry(makeEntry({ requestId: 'req-b' }))
 
       const lines = readFileSync(auditFile, 'utf-8').trim().split('\n')
-      const first = JSON.parse(lines[0] as string) as AuditEntry
-      const second = JSON.parse(lines[1] as string) as AuditEntry
+      const first = JSON.parse(lines[0]!) as AuditEntry
+      const second = JSON.parse(lines[1]!) as AuditEntry
 
       expect(first.signature).not.toBe(second.signature)
     }, 15_000)

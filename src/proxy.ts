@@ -26,6 +26,7 @@ import type { ObfuscationStats } from './ast/mapper.ts'
 import { logger, setLogLevel } from './logger.ts'
 import { writeAuditEntry, initAuditSigner } from './audit.ts'
 import { StreamDeobfuscator } from './stream-deobfuscator.ts'
+import { initTreeSitter } from './ast/tree-sitter.ts'
 import type { AuditEntry, IdentifierMapping } from './types.ts'
 
 // ── Config ───────────────────────────────────────────────────────────────────────────
@@ -58,11 +59,14 @@ const SESSION_KEY = keyResult.value
 // Initialise SPHINCS+ audit signer using the session MAC key.
 initAuditSigner(SESSION_KEY.macKey)
 
+// Initialise tree-sitter AST extraction (non-fatal — falls back to regex on failure).
+void initTreeSitter()
+
 // Scrub secrets from process.env immediately after use.
-// They are now held in  / ; keeping them in
+// They are now held in SESSION_KEY / config; keeping them in
 // process.env exposes them via /proc/self/environ on Linux/WSL.
-delete process.env['ANTHROPIC_API_KEY']
-delete process.env['HONEY_PASSPHRASE']
+delete process.env.ANTHROPIC_API_KEY
+delete process.env.HONEY_PASSPHRASE
 
 logger.info('Honey proxy starting', {
   port: config.proxyPort,
@@ -81,17 +85,20 @@ interface AnthropicTextBlock {
   readonly [key: string]: unknown
 }
 
+/** Narrows unknown to a non-null JSON object record (used for JSON.parse results). */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 /**
  * Type guard for Anthropic text content blocks.
  * Narrows `unknown` to `AnthropicTextBlock` using structural checks.
+ * TypeScript's `'in'` narrowing provides property access after the checks.
  */
 function isTextBlock(item: unknown): item is AnthropicTextBlock {
   if (typeof item !== 'object' || item === null) return false
   if (!('type' in item) || !('text' in item)) return false
-  // The `in` checks confirm the properties exist; narrow via indexed access
-  // on the structurally-validated object.
-  const obj = item as Record<string, unknown>
-  return obj['type'] === 'text' && typeof obj['text'] === 'string'
+  return item.type === 'text' && typeof item.text === 'string'
 }
 
 // ── Header allowlist ──────────────────────────────────────────────────────────────────
@@ -160,8 +167,11 @@ interface ObfuscateResult {
 function extractContent(msg: unknown): string | unknown[] | undefined {
   if (typeof msg !== 'object' || msg === null) return undefined
   if (!('content' in msg)) return undefined
-  const content = (msg as Record<string, unknown>)['content']
+  // TypeScript narrows msg to include .content after the 'in' check
+  const content: unknown = msg.content
   if (typeof content === 'string') return content
+  // Array.isArray on an `unknown` value narrows to any[] in some TS configs
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-return
   if (Array.isArray(content)) return content
   return undefined
 }
@@ -260,7 +270,7 @@ async function forwardRequest(
     return new Response('Internal Server Error', { status: 500 })
   }
 
-  return fetch(upstreamUrl.toString(), {
+  return await fetch(upstreamUrl.toString(), {
     method: originalReq.method,
     headers: filterRequestHeaders(originalReq.headers),
     body,
@@ -283,10 +293,13 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     return new Response('Bad Request', { status: 400 })
   }
 
-  if (rawBody.length > MAX_BODY_BYTES) {
+  // Use byte length (not character count) — multi-byte UTF-8 chars can exceed
+  // the limit while still appearing within rawBody.length characters.
+  const bodyByteLength = Buffer.byteLength(rawBody, 'utf8')
+  if (bodyByteLength > MAX_BODY_BYTES) {
     logger.warn('Request body exceeds size limit — rejecting', {
       requestId,
-      size: rawBody.length,
+      size: bodyByteLength,
       limit: MAX_BODY_BYTES,
     })
     return new Response('Request Entity Too Large', { status: 413 })
@@ -294,19 +307,18 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
 
   let parsed: unknown
   try {
-    parsed = JSON.parse(rawBody) as unknown
-  } catch (e) {
+    parsed = JSON.parse(rawBody)
+  } catch {
     logger.warn('Non-JSON body on /v1/messages — rejecting', { requestId })
     return new Response('Bad Request: /v1/messages requires a JSON body', { status: 400 })
   }
 
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+  if (!isRecord(parsed)) {
     logger.warn('Request body is not a JSON object — rejecting', { requestId })
     return new Response('Bad Request: /v1/messages requires a JSON object', { status: 400 })
   }
 
-  const body = parsed as Record<string, unknown>
-  const messages = body['messages']
+  const messages = parsed.messages
   if (!Array.isArray(messages)) {
     logger.warn('Request missing messages array — rejecting', { requestId })
     return new Response('Bad Request: messages must be an array', { status: 400 })
@@ -319,9 +331,9 @@ async function handleMessagesEndpoint(req: Request): Promise<Response> {
     logger.info('Obfuscated identifiers', { requestId, count: mappingSize })
   }
 
-  const outBody = JSON.stringify({ ...body, messages: obfuscatedMessages })
+  const outBody = JSON.stringify({ ...parsed, messages: obfuscatedMessages })
   const upstreamResponse = await forwardRequest(req, outBody)
-  const isStreaming = body['stream'] === true ||
+  const isStreaming = parsed.stream === true ||
     (upstreamResponse.headers.get('content-type') ?? '').includes('text/event-stream')
 
   const emitAudit = (upstreamStatus: number): void => {
@@ -367,7 +379,7 @@ function handleStreamingResponse(
   startMs: number,
   emitAudit: (upstreamStatus: number) => void,
 ): Response {
-  if (!upstreamResponse.body) {
+  if (upstreamResponse.body === null) {
     return new Response(null, {
       status: upstreamResponse.status,
       headers: filterResponseHeaders(upstreamResponse.headers),
@@ -381,30 +393,32 @@ function handleStreamingResponse(
   const upstreamBody = upstreamResponse.body
 
   const transformedBody = new ReadableStream<Uint8Array>({
-    async start(controller) {
+    async start(controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> {
       const reader = upstreamBody.getReader()
       try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
+        for (;;) {
+          const readResult = await reader.read()
+          if (readResult.done) break
 
-          const chunk = decoder.decode(value, { stream: true })
+          // readResult.value is Uint8Array at runtime; Bun types the reader as any
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+          const chunk = decoder.decode(readResult.value, { stream: true })
           const processed = deobfuscator.processChunk(chunk)
-          if (processed) {
+          if (processed !== '') {
             controller.enqueue(encoder.encode(processed))
           }
         }
 
         // Flush remaining decoder + deobfuscator state
         const tail = decoder.decode(undefined, { stream: false })
-        if (tail) {
+        if (tail !== '') {
           const processed = deobfuscator.processChunk(tail)
-          if (processed) {
+          if (processed !== '') {
             controller.enqueue(encoder.encode(processed))
           }
         }
         const flushed = deobfuscator.flush()
-        if (flushed) {
+        if (flushed !== '') {
           controller.enqueue(encoder.encode(flushed))
         }
 
@@ -454,7 +468,7 @@ const server = Bun.serve({
       return new Response('Internal Server Error', { status: 500 })
     }
 
-    return fetch(upstreamUrl.toString(), {
+    return await fetch(upstreamUrl.toString(), {
       method: req.method,
       headers: filterRequestHeaders(req.headers),
       body: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
@@ -470,12 +484,16 @@ function handleShutdown(signal: string): void {
   zeroSessionKey(SESSION_KEY)
   // stop() waits for in-flight requests to complete before closing the server.
   // Do NOT call process.exit() here — let the event loop drain naturally.
-  server.stop()
+  void server.stop()
   logger.info('Server stopped')
 }
 
-process.on('SIGINT', () => handleShutdown('SIGINT'))
-process.on('SIGTERM', () => handleShutdown('SIGTERM'))
+process.on('SIGINT', () => {
+  handleShutdown('SIGINT')
+})
+process.on('SIGTERM', () => {
+  handleShutdown('SIGTERM')
+})
 
 logger.info('Honey proxy ready', {
   url: `http://127.0.0.1:${config.proxyPort}`,

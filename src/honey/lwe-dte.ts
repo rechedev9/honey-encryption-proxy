@@ -53,7 +53,7 @@ function sampleError(nonce: Buffer, index: number): number {
  * Derives the secret vector s ∈ Z_q^n deterministically from fpeKey.
  * s[i] = HMAC-SHA256(fpeKey, "lwe:s:<i>") mod q
  */
-export function deriveSecretVector(fpeKey: Buffer): readonly number[] {
+function deriveSecretVector(fpeKey: Buffer): readonly number[] {
   const s: number[] = []
   for (let i = 0; i < LWE_N; i++) {
     const h = createHmac('sha256', fpeKey).update(`lwe:s:${i}`).digest()
@@ -66,7 +66,7 @@ export function deriveSecretVector(fpeKey: Buffer): readonly number[] {
  * Derives the public vector a ∈ Z_q^n from key + nonce deterministically.
  * a[i] = HMAC-SHA256(key, nonce || "lwe:a:<i>") mod q
  */
-export function derivePublicVector(key: Buffer, nonce: Buffer): readonly number[] {
+function derivePublicVector(key: Buffer, nonce: Buffer): readonly number[] {
   const a: number[] = []
   for (let i = 0; i < LWE_N; i++) {
     const h = createHmac('sha256', key).update(nonce).update(`lwe:a:${i}`).digest()

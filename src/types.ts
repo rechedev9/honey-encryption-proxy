@@ -4,8 +4,8 @@
 
 // ── Result<T, E> ────────────────────────────────────────────────────────────
 
-type Ok<T> = { readonly ok: true; readonly value: T }
-type Err<E> = { readonly ok: false; readonly error: E }
+interface Ok<T> { readonly ok: true; readonly value: T }
+interface Err<E> { readonly ok: false; readonly error: E }
 export type Result<T, E = Error> = Ok<T> | Err<E>
 
 export function ok<T>(value: T): Ok<T> {
@@ -34,7 +34,7 @@ export interface SessionKey {
    * Prevents accidental key-material serialization.
    * JSON.stringify(sessionKey) returns only safe metadata — never key bytes.
    */
-  toJSON(): {
+  toJSON: () => {
     readonly sessionId: string
     readonly derivedAt: number
     readonly keyDerivation: string
@@ -79,10 +79,3 @@ export interface AuditEntry {
   readonly sigAlgorithm?: string
 }
 
-// ── Request context ──────────────────────────────────────────────────────────
-
-export interface RequestContext {
-  readonly requestId: string
-  readonly sessionKey: SessionKey
-  readonly mapping: IdentifierMapping
-}

@@ -1,8 +1,9 @@
 /**
  * Code block and identifier extractor.
  *
- * Phase 1 uses regex-based extraction (no native WASM dependency).
- * Phase 2 will migrate to web-tree-sitter for full AST precision.
+ * Identifier extraction uses web-tree-sitter AST when available (precise —
+ * ignores string literal contents and comments) with a regex fallback for
+ * unsupported languages or when tree-sitter is uninitialised.
  *
  * Extracts:
  *  - Fenced code blocks from Markdown/prompt text (``` ... ```)
@@ -11,6 +12,7 @@
 
 import type { CodeBlock } from '../types.ts'
 import { shouldObfuscate } from '../honey/fpe.ts'
+import { extractIdentifiersAST } from './tree-sitter.ts'
 
 // ── Comment stripping ────────────────────────────────────────────────────────
 
@@ -40,7 +42,7 @@ export function stripComments(code: string): string {
   STRIP_REGEX.lastIndex = 0
   return code.replace(STRIP_REGEX, (match: string): string => {
     // String literals are the only alternatives that don't start with /
-    if (match.charAt(0) !== '/') return match
+    if (!match.startsWith('/')) return match
     // Block comment — replace non-newline chars with spaces to preserve line numbers
     if (match.charAt(1) === '*') return match.replace(/[^\n]/g, ' ')
     // Line comment — remove entirely
@@ -126,11 +128,10 @@ export function transformCodeBlocks(
 const IDENTIFIER_REGEX = /\b([A-Za-z_$][A-Za-z0-9_$]*)\b/g
 
 /**
- * Extracts all unique user-defined identifiers from source code.
- * Filters out language keywords, builtins, and short tokens via the FPE
- * skip-list.
+ * Regex-based identifier extraction (fallback path).
+ * Includes words inside string literals — callers must strip comments first.
  */
-export function extractIdentifiers(code: string): ReadonlySet<string> {
+function extractIdentifiersRegex(code: string): ReadonlySet<string> {
   const found = new Set<string>()
   let match: RegExpExecArray | null
 
@@ -147,14 +148,18 @@ export function extractIdentifiers(code: string): ReadonlySet<string> {
 }
 
 /**
- * Extracts all unique identifiers from a list of code blocks.
+ * Extracts all unique user-defined identifiers from source code.
+ *
+ * Tries AST extraction first (tree-sitter — precise, skips string/comment
+ * contents). Falls back to regex when tree-sitter is uninitialised or the
+ * language tag is unsupported.
+ *
+ * @param code     Source code with comments already stripped by the caller.
+ * @param langTag  Language fence tag (e.g. "typescript", "ts", "js"). Optional.
  */
-export function extractIdentifiersFromBlocks(blocks: readonly CodeBlock[]): ReadonlySet<string> {
-  const all = new Set<string>()
-  for (const block of blocks) {
-    for (const id of extractIdentifiers(block.content)) {
-      all.add(id)
-    }
-  }
-  return all
+export function extractIdentifiers(code: string, langTag = ''): ReadonlySet<string> {
+  const astResult = extractIdentifiersAST(code, langTag)
+  if (astResult !== null) return astResult
+  return extractIdentifiersRegex(code)
 }
+

@@ -29,11 +29,11 @@ const SLH_DSA_SEED_BYTES = 48
 
 // Guard against $HOME manipulation: verify the audit directory stays
 // within the real home directory before any writes occur.
-const _resolvedHome = resolve(homedir())
-const _resolvedDir = resolve(AUDIT_DIR)
-if (!_resolvedDir.startsWith(_resolvedHome + sep)) {
+const resolvedHome = resolve(homedir())
+const resolvedDir = resolve(AUDIT_DIR)
+if (!resolvedDir.startsWith(resolvedHome + sep)) {
   throw new Error(
-    `Audit directory escapes home directory: ${_resolvedDir} is not under ${_resolvedHome}`,
+    `Audit directory escapes home directory: ${resolvedDir} is not under ${resolvedHome}`,
   )
 }
 
@@ -59,7 +59,9 @@ export function getAuditFilePath(): string {
  * public key can be shared for offline log verification.
  */
 export function initAuditSigner(macKey: Buffer): void {
-  const seed = Buffer.from(hkdfSync('sha256', macKey, macKey, 'honey:slh-dsa:v1', SLH_DSA_SEED_BYTES))
+  // Use a static domain-separation string as the HKDF salt (not macKey itself)
+  // to avoid the circular dependency of using the IKM as its own salt.
+  const seed = Buffer.from(hkdfSync('sha256', macKey, 'honey:slh-dsa:salt', 'honey:slh-dsa:v1', SLH_DSA_SEED_BYTES))
   const { secretKey } = slh_dsa_sha2_128s.keygen(seed)
   auditSecretKey = secretKey
 }

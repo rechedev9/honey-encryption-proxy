@@ -18,7 +18,9 @@ export const CORPUS_SIZE = CORPUS.length
  */
 export function getEntry(index: number): CorpusEntry {
   const idx = ((index % CORPUS_SIZE) + CORPUS_SIZE) % CORPUS_SIZE
-  return CORPUS[idx] ?? CORPUS[0]!
+  const entry = CORPUS[idx] ?? CORPUS[0]
+  if (entry === undefined) throw new Error('Corpus is empty — cannot get entry')
+  return entry
 }
 
 /**

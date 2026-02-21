@@ -72,7 +72,7 @@ const VOCAB: readonly string[] = [
 // Verify at module load time that VOCAB contains no duplicates.
 // A duplicate reduces entropy and creates a statistical fingerprint in
 // the output distribution — caught here rather than silently degrading.
-if (process.env['NODE_ENV'] !== 'test') {
+if (process.env.NODE_ENV !== 'test') {
   const vocabSet = new Set(VOCAB)
   if (vocabSet.size !== VOCAB.length) {
     throw new Error(
@@ -157,7 +157,7 @@ function reassemble(words: string[], convention: Convention): string {
 // ── Core FPE word mapping ────────────────────────────────────────────────────
 
 function mapWord(word: string, fpeKey: Buffer, offset = 0): string {
-  const hash = createHmac('sha256', fpeKey).update(word.toLowerCase() + offset).digest()
+  const hash = createHmac('sha256', fpeKey).update(word.toLowerCase() + ':' + String(offset)).digest()
   const idx = hash.readUInt32BE(0) % VOCAB.length
   return VOCAB[idx] ?? VOCAB[0] ?? 'data'
 }
@@ -262,7 +262,7 @@ export function reverseMapping(text: string, fakeToReal: ReadonlyMap<string, str
   return result
 }
 
-export function escapeRegex(s: string): string {
+function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 

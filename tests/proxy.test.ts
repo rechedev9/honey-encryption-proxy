@@ -8,10 +8,11 @@
 import { describe, it, expect } from 'bun:test'
 import { obfuscateText, deobfuscateText } from '../src/ast/mapper.ts'
 import { deriveSessionKey } from '../src/honey/key-manager.ts'
+import type { SessionKey } from '../src/types.ts'
 
 const PASSPHRASE = 'proxy-test-passphrase'
 
-function makeKey() {
+function makeKey(): SessionKey {
   const result = deriveSessionKey(PASSPHRASE)
   if (!result.ok) throw new Error('Key derivation failed')
   return result.value

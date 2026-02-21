@@ -11,10 +11,11 @@
  */
 
 import { describe, it, expect } from 'bun:test'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createCipheriv, createHmac } from 'node:crypto'
 import { encrypt, decrypt, decryptHoney, FORMAT_VERSION, FORMAT_VERSION_V2 } from '../src/honey/engine.ts'
 import { deriveSessionKey, deriveFromSalt } from '../src/honey/key-manager.ts'
 import { CORPUS_SIZE } from '../src/corpus/index.ts'
+import { encode as dteEncode, indexToBytes } from '../src/honey/dte-corpus.ts'
 
 const PASSPHRASE = 'test-passphrase-for-unit-tests'
 const SAMPLE_CODE = `function calculateInvoiceTotal(items: LineItem[]): number {
@@ -91,14 +92,12 @@ describe('HoneyEngine', () => {
       if (!keyResult.ok) return
 
       // Manually build a v1 payload: 0x01 || nonce(16) || HMAC(32) || ciphertext(4)
-      const { createCipheriv, createHmac: hmac, randomBytes: rb } = require('node:crypto')
-      const nonce = rb(16)
-      const { encode: dteEncode, indexToBytes } = require('../src/honey/dte-corpus.ts')
+      const nonce = randomBytes(16)
       const index = dteEncode(SAMPLE_CODE, keyResult.value.key)
       const plainBytes = indexToBytes(index)
       const cipher = createCipheriv('aes-256-ctr', keyResult.value.key, nonce)
       const ct = Buffer.concat([cipher.update(plainBytes), cipher.final()])
-      const tag = hmac('sha256', keyResult.value.macKey).update(nonce).update(ct).digest()
+      const tag = createHmac('sha256', keyResult.value.macKey).update(nonce).update(ct).digest()
       const v1Payload = Buffer.concat([Buffer.from([FORMAT_VERSION]), nonce, tag, ct])
 
       const decResult = decrypt({ encoded: v1Payload.toString('base64url') }, keyResult.value)
@@ -114,14 +113,12 @@ describe('HoneyEngine', () => {
       if (!keyResult.ok) return
 
       // Manually build a v0 payload (nonce || tag || ciphertext, no version byte)
-      const { createCipheriv, createHmac: hmac, randomBytes: rb } = require('node:crypto')
-      const nonce = rb(16)
-      const { encode: dteEncode, indexToBytes } = require('../src/honey/dte-corpus.ts')
+      const nonce = randomBytes(16)
       const index = dteEncode(SAMPLE_CODE, keyResult.value.key)
       const plainBytes = indexToBytes(index)
       const cipher = createCipheriv('aes-256-ctr', keyResult.value.key, nonce)
       const ct = Buffer.concat([cipher.update(plainBytes), cipher.final()])
-      const tag = hmac('sha256', keyResult.value.macKey).update(nonce).update(ct).digest()
+      const tag = createHmac('sha256', keyResult.value.macKey).update(nonce).update(ct).digest()
       const v0Payload = Buffer.concat([nonce, tag, ct])
       const encoded = v0Payload.toString('base64url')
 

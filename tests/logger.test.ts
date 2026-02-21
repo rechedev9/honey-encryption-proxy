@@ -4,7 +4,6 @@
 
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test'
 import { logger, setLogLevel, getLogLevel } from '../src/logger.ts'
-import type { LogLevel } from '../src/logger.ts'
 
 describe('Logger level filtering', () => {
   const stdoutWrite = mock(() => true)
@@ -13,8 +12,8 @@ describe('Logger level filtering', () => {
   let origStderr: typeof process.stderr.write
 
   beforeEach(() => {
-    origStdout = process.stdout.write
-    origStderr = process.stderr.write
+    origStdout = process.stdout.write.bind(process.stdout)
+    origStderr = process.stderr.write.bind(process.stderr)
     process.stdout.write = stdoutWrite as unknown as typeof process.stdout.write
     process.stderr.write = stderrWrite as unknown as typeof process.stderr.write
     stdoutWrite.mockClear()

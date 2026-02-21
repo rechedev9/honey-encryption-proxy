@@ -54,6 +54,7 @@ export function deriveFromSalt(
   capsule?: Buffer,
 ): Result<SessionKey> {
   const masterKey: Buffer = Buffer.from(scryptSync(passphrase, salt, KEY_BYTES, {
+    // eslint-disable-next-line @typescript-eslint/naming-convention
     N: SCRYPT_N,
     r: SCRYPT_R,
     p: SCRYPT_P,
@@ -83,7 +84,14 @@ export function deriveFromSalt(
       const b = kybContribution[i] ?? 0
       masterKey[i] = a ^ b
     }
+    // Zero ML-KEM intermediates immediately — no longer needed.
+    sharedSecret.fill(0)
+    kybContribution.fill(0)
   }
+  // Zero the ML-KEM seed and secret key regardless of whether a capsule was used.
+  kybSeed.fill(0)
+  // secretKey is a Uint8Array returned by @noble/post-quantum
+  ;(secretKey).fill(0)
 
   // ── HKDF sub-keys ────────────────────────────────────────────────────────
   const key = Buffer.from(
@@ -117,18 +125,6 @@ export function deriveFromSalt(
       }
     },
   })
-}
-
-/**
- * Serialises the salt to a base64 string for embedding in payloads so the
- * proxy can re-derive the same session key when processing the response.
- */
-export function saltToBase64(salt: Buffer): string {
-  return salt.toString('base64url')
-}
-
-export function saltFromBase64(b64: string): Buffer {
-  return Buffer.from(b64, 'base64url')
 }
 
 /**

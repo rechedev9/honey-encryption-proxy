@@ -35,27 +35,37 @@ const DEFAULT_PORT = 8080
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com'
 
 export function loadConfig(): Result<Config> {
-  const apiKey = process.env['ANTHROPIC_API_KEY']
-  if (!apiKey) {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (apiKey === undefined || apiKey === '') {
     return err(new Error('ANTHROPIC_API_KEY env var is required'))
   }
 
-  const passphrase = process.env['HONEY_PASSPHRASE']
-  if (!passphrase) {
+  const passphrase = process.env.HONEY_PASSPHRASE
+  if (passphrase === undefined || passphrase === '') {
     return err(new Error('HONEY_PASSPHRASE env var is required'))
   }
 
-  const portStr = process.env['PROXY_PORT'] ?? String(DEFAULT_PORT)
+  const portStr = process.env.PROXY_PORT ?? String(DEFAULT_PORT)
   const port = parseInt(portStr, 10)
   if (isNaN(port) || port < 1 || port > 65535) {
     return err(new Error(`PROXY_PORT must be a valid port number, got: ${portStr}`))
   }
 
-  const upstream = process.env['ANTHROPIC_BASE_URL_UPSTREAM'] ?? DEFAULT_UPSTREAM
-  const rawLevel = process.env['LOG_LEVEL'] ?? 'info'
+  const upstream = process.env.ANTHROPIC_BASE_URL_UPSTREAM ?? DEFAULT_UPSTREAM
+  let parsedUpstream: URL
+  try {
+    parsedUpstream = new URL(upstream)
+  } catch {
+    return err(new Error(`ANTHROPIC_BASE_URL_UPSTREAM is not a valid URL: ${upstream}`))
+  }
+  if (parsedUpstream.protocol !== 'https:') {
+    return err(new Error(`ANTHROPIC_BASE_URL_UPSTREAM must use https:// scheme, got: ${parsedUpstream.protocol}`))
+  }
+
+  const rawLevel = process.env.LOG_LEVEL ?? 'info'
   const logLevel: LogLevel = isLogLevel(rawLevel) ? rawLevel : 'info'
 
-  const kyberCapsule = process.env['HONEY_KYBER_CAPSULE']
+  const kyberCapsule = process.env.HONEY_KYBER_CAPSULE
 
   return ok({
     anthropicApiKey: apiKey,

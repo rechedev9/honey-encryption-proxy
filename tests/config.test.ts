@@ -25,12 +25,12 @@ describe('loadConfig', () => {
       savedEnv[key] = process.env[key]
     }
     // Minimal valid env
-    process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test-key'
-    process.env['HONEY_PASSPHRASE'] = 'test-passphrase'
-    delete process.env['PROXY_PORT']
-    delete process.env['ANTHROPIC_BASE_URL_UPSTREAM']
-    delete process.env['LOG_LEVEL']
-    delete process.env['HONEY_KYBER_CAPSULE']
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key'
+    process.env.HONEY_PASSPHRASE = 'test-passphrase'
+    delete process.env.PROXY_PORT
+    delete process.env.ANTHROPIC_BASE_URL_UPSTREAM
+    delete process.env.LOG_LEVEL
+    delete process.env.HONEY_KYBER_CAPSULE
   })
 
   afterEach(() => {
@@ -47,7 +47,7 @@ describe('loadConfig', () => {
 
   describe('required env vars', () => {
     it('returns error when ANTHROPIC_API_KEY is missing', () => {
-      delete process.env['ANTHROPIC_API_KEY']
+      delete process.env.ANTHROPIC_API_KEY
       const result = loadConfig()
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -56,7 +56,7 @@ describe('loadConfig', () => {
     })
 
     it('returns error when HONEY_PASSPHRASE is missing', () => {
-      delete process.env['HONEY_PASSPHRASE']
+      delete process.env.HONEY_PASSPHRASE
       const result = loadConfig()
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -86,7 +86,7 @@ describe('loadConfig', () => {
     })
 
     it('accepts a valid port', () => {
-      process.env['PROXY_PORT'] = '3000'
+      process.env.PROXY_PORT = '3000'
       const result = loadConfig()
       expect(result.ok).toBe(true)
       if (result.ok) {
@@ -95,7 +95,7 @@ describe('loadConfig', () => {
     })
 
     it('accepts port 1 (lower boundary)', () => {
-      process.env['PROXY_PORT'] = '1'
+      process.env.PROXY_PORT = '1'
       const result = loadConfig()
       expect(result.ok).toBe(true)
       if (result.ok) {
@@ -104,7 +104,7 @@ describe('loadConfig', () => {
     })
 
     it('accepts port 65535 (upper boundary)', () => {
-      process.env['PROXY_PORT'] = '65535'
+      process.env.PROXY_PORT = '65535'
       const result = loadConfig()
       expect(result.ok).toBe(true)
       if (result.ok) {
@@ -113,7 +113,7 @@ describe('loadConfig', () => {
     })
 
     it('rejects port 0', () => {
-      process.env['PROXY_PORT'] = '0'
+      process.env.PROXY_PORT = '0'
       const result = loadConfig()
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -122,7 +122,7 @@ describe('loadConfig', () => {
     })
 
     it('rejects port 65536', () => {
-      process.env['PROXY_PORT'] = '65536'
+      process.env.PROXY_PORT = '65536'
       const result = loadConfig()
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -131,7 +131,7 @@ describe('loadConfig', () => {
     })
 
     it('rejects non-numeric port', () => {
-      process.env['PROXY_PORT'] = 'abc'
+      process.env.PROXY_PORT = 'abc'
       const result = loadConfig()
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -140,7 +140,7 @@ describe('loadConfig', () => {
     })
 
     it('rejects negative port', () => {
-      process.env['PROXY_PORT'] = '-1'
+      process.env.PROXY_PORT = '-1'
       const result = loadConfig()
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -162,7 +162,7 @@ describe('loadConfig', () => {
 
     it('accepts valid log levels', () => {
       for (const level of ['debug', 'info', 'warn', 'error'] as const) {
-        process.env['LOG_LEVEL'] = level
+        process.env.LOG_LEVEL = level
         const result = loadConfig()
         expect(result.ok).toBe(true)
         if (result.ok) {
@@ -172,7 +172,7 @@ describe('loadConfig', () => {
     })
 
     it('falls back to info for invalid log level', () => {
-      process.env['LOG_LEVEL'] = 'verbose'
+      process.env.LOG_LEVEL = 'verbose'
       const result = loadConfig()
       expect(result.ok).toBe(true)
       if (result.ok) {
@@ -193,7 +193,7 @@ describe('loadConfig', () => {
     })
 
     it('uses custom upstream when set', () => {
-      process.env['ANTHROPIC_BASE_URL_UPSTREAM'] = 'https://custom.example.com'
+      process.env.ANTHROPIC_BASE_URL_UPSTREAM = 'https://custom.example.com'
       const result = loadConfig()
       expect(result.ok).toBe(true)
       if (result.ok) {
@@ -214,7 +214,7 @@ describe('loadConfig', () => {
     })
 
     it('includes honeyKyberCapsule when env var is present', () => {
-      process.env['HONEY_KYBER_CAPSULE'] = 'dGVzdC1jYXBzdWxl'
+      process.env.HONEY_KYBER_CAPSULE = 'dGVzdC1jYXBzdWxl'
       const result = loadConfig()
       expect(result.ok).toBe(true)
       if (result.ok) {

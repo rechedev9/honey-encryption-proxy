@@ -395,6 +395,69 @@ describe('buildNumericMapping', () => {
   })
 })
 
+// ── AST extraction integration ────────────────────────────────────────────────
+
+describe('AST extraction — integration with obfuscateText', () => {
+  it('does NOT obfuscate identifier names that appear only inside string literals', () => {
+    const keyResult = deriveSessionKey('ast-integration-test')
+    expect(keyResult.ok).toBe(true)
+    if (!keyResult.ok) return
+
+    // "PaymentGateway" is a string literal value — AST extraction excludes it.
+    // Regex extraction would include it, causing the string to be obfuscated too.
+    const text = '```typescript\nconst gateway = "PaymentGateway"\n```'
+    const { obfuscated } = obfuscateText(text, keyResult.value)
+
+    // The string literal "PaymentGateway" must remain unchanged
+    expect(obfuscated.includes('"PaymentGateway"')).toBe(true)
+  })
+
+  it('still obfuscates identifiers used in code (not just in strings)', () => {
+    const keyResult = deriveSessionKey('ast-integration-test')
+    expect(keyResult.ok).toBe(true)
+    if (!keyResult.ok) return
+
+    const text =
+      '```typescript\nclass PaymentGateway { process() {} }\n```'
+    const { obfuscated } = obfuscateText(text, keyResult.value)
+
+    // The class name in code position must be obfuscated
+    expect(obfuscated.includes('PaymentGateway')).toBe(false)
+  })
+
+  it('round-trips a typescript-tagged block with AST extraction', () => {
+    const keyResult = deriveSessionKey('ast-integration-test')
+    expect(keyResult.ok).toBe(true)
+    if (!keyResult.ok) return
+
+    const text =
+      '```typescript\nclass InvoiceProcessor {\n  calculateTax(amount: number): number { return amount * 0.21 }\n}\n```'
+    const { obfuscated, mapping } = obfuscateText(text, keyResult.value)
+
+    expect(obfuscated).not.toBe(text)
+    expect(obfuscated.includes('InvoiceProcessor')).toBe(false)
+    expect(obfuscated.includes('calculateTax')).toBe(false)
+
+    const restored = deobfuscateText(obfuscated, mapping)
+    expect(restored).toBe(text)
+  })
+
+  it('round-trips a js-tagged block', () => {
+    const keyResult = deriveSessionKey('ast-integration-test')
+    expect(keyResult.ok).toBe(true)
+    if (!keyResult.ok) return
+
+    const text =
+      '```js\nfunction processOrder(orderId) { return orderId }\n```'
+    const { obfuscated, mapping } = obfuscateText(text, keyResult.value)
+
+    expect(obfuscated.includes('processOrder')).toBe(false)
+
+    const restored = deobfuscateText(obfuscated, mapping)
+    expect(restored).toBe(text)
+  })
+})
+
 // ── Mapper end-to-end ─────────────────────────────────────────────────────────
 
 describe('obfuscateText / deobfuscateText', () => {

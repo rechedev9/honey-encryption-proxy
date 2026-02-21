@@ -69,7 +69,7 @@ export function obfuscateText(text: string, sessionKey: SessionKey): MapResult {
   for (const block of blocks) {
     const stripped = stripComments(block.content)
     strippedParts.push(stripped)
-    for (const id of extractIdentifiers(stripped)) {
+    for (const id of extractIdentifiers(stripped, block.lang)) {
       identifiers.add(id)
     }
   }
@@ -149,7 +149,7 @@ export function buildGlobalMapping(
     for (const block of extractCodeBlocks(text)) {
       const stripped = stripComments(block.content)
       allStripped.push(stripped)
-      for (const id of extractIdentifiers(stripped)) {
+      for (const id of extractIdentifiers(stripped, block.lang)) {
         allIdentifiers.add(id)
       }
     }

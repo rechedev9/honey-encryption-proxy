@@ -13,9 +13,12 @@
 import { deobfuscateText } from './ast/mapper.ts'
 import type { IdentifierMapping } from './types.ts'
 
+/** Maximum size for the incomplete-event buffer (2 MiB in characters). */
+const MAX_PENDING_CHARS = 2 * 1024 * 1024
+
 export class StreamDeobfuscator {
   private readonly mapping: IdentifierMapping
-  private pending: string = ''
+  private pending = ''
 
   constructor(mapping: IdentifierMapping) {
     this.mapping = mapping
@@ -26,6 +29,16 @@ export class StreamDeobfuscator {
     if (this.mapping.fakeToReal.size === 0) return chunk
 
     this.pending += chunk
+
+    // Guard against unbounded accumulation from a misbehaving upstream.
+    // If no SSE delimiter arrives within MAX_PENDING_CHARS, flush the buffer
+    // directly (without deobfuscation) to avoid holding large payloads.
+    if (this.pending.length > MAX_PENDING_CHARS) {
+      const flushed = this.pending
+      this.pending = ''
+      return flushed
+    }
+
     const events = this.pending.split('\n\n')
     this.pending = events.pop() ?? ''
 

@@ -5,8 +5,8 @@
  * Sources: expressjs/express, sindresorhus/got, nodejs/node, vitejs/vite,
  *          microsoft/TypeScript, denoland/deno_std, vercel/next.js.
  *
- * This embedded corpus (~60 snippets) covers Phase 1.
- * Phase 2 will load an extended corpus (~10k snippets) from disk.
+ * This embedded corpus (~52 snippets) is used as DTE decoys.
+ * An extended disk-based corpus is planned for Phase 3.
  */
 
 export interface CorpusEntry {

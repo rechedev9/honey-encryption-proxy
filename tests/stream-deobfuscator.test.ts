@@ -6,7 +6,7 @@ import { describe, it, expect } from 'bun:test'
 import { StreamDeobfuscator } from '../src/stream-deobfuscator.ts'
 import type { IdentifierMapping } from '../src/types.ts'
 
-function makeMapping(pairs: [string, string][]): IdentifierMapping {
+function makeMapping(pairs: Array<[string, string]>): IdentifierMapping {
   const realToFake = new Map<string, string>()
   const fakeToReal = new Map<string, string>()
   for (const [real, fake] of pairs) {
