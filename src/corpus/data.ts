@@ -1,12 +1,7 @@
 /**
- * Corpus of real open-source code snippets used as DTE decoys.
- *
  * All snippets are from projects with MIT / Apache-2.0 / BSD licenses.
  * Sources: expressjs/express, sindresorhus/got, nodejs/node, vitejs/vite,
  *          microsoft/TypeScript, denoland/deno_std, vercel/next.js.
- *
- * This embedded corpus (~52 snippets) is used as DTE decoys.
- * An extended disk-based corpus is planned for Phase 3.
  */
 
 export interface CorpusEntry {
