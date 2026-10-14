@@ -1,19 +1,9 @@
-/**
- * Shared test data and utilities for integration / E2E tests.
- */
-
-/** Fixed passphrase for deterministic test key derivation. */
 export const TEST_PASSPHRASE = 'integration-test-passphrase-32chars!'
 
-/** Fixed API key for test requests (never hits a real API). */
 export const TEST_API_KEY = 'sk-ant-test-key-for-integration'
 
-/** Default model for test fixtures. */
 export const TEST_MODEL = 'claude-haiku-4-5-20251001'
 
-/**
- * Builds a minimal Anthropic /v1/messages request body.
- */
 export function makeMessagesBody(options?: {
   readonly messages?: ReadonlyArray<Record<string, unknown>>
   readonly stream?: boolean
@@ -32,7 +22,6 @@ export function makeMessagesBody(options?: {
   }
 }
 
-/** Builds a stub Anthropic JSON response body. */
 export function makeAnthropicResponse(text: string): Record<string, unknown> {
   return {
     id: `msg_test_${crypto.randomUUID().slice(0, 8)}`,
@@ -45,15 +34,10 @@ export function makeAnthropicResponse(text: string): Record<string, unknown> {
   }
 }
 
-/** Formats a string as an SSE data line with the standard `\n\n` delimiter. */
 export function sseEvent(data: string): string {
   return `data: ${data}\n\n`
 }
 
-/**
- * Consumes an SSE response stream and returns all `data:` payloads.
- * Strips the `data: ` prefix and the trailing newlines from each event.
- */
 export async function consumeSSEStream(response: Response): Promise<readonly string[]> {
   const text = await response.text()
   return text
@@ -62,10 +46,6 @@ export async function consumeSSEStream(response: Response): Promise<readonly str
     .map((line) => line.slice('data: '.length))
 }
 
-/**
- * Consumes an SSE response stream and returns the concatenated text
- * from all `content_block_delta` events.
- */
 export async function consumeSSEText(response: Response): Promise<string> {
   const events = await consumeSSEStream(response)
   let text = ''

@@ -1,18 +1,8 @@
-/**
- * Test proxy server for integration tests.
- *
- * Uses the extracted createProxyHandler to start a real Bun HTTP server
- * on port 0, pointing at a stub upstream. Does NOT call initAuditSigner
- * (avoids the ~2s SPHINCS+ keygen) unless explicitly requested.
- */
-
 import { createProxyHandler } from '../../src/proxy-handler.ts'
 import { deriveSessionKey } from '../../src/honey/key-manager.ts'
 import { setLogLevel } from '../../src/logger.ts'
 import type { SessionKey } from '../../src/types.ts'
 import { TEST_PASSPHRASE, TEST_API_KEY } from './fixtures.ts'
-
-// ── Types ───────────────────────────────────────────────────────────────────
 
 export interface TestProxyServer {
   readonly url: string
@@ -27,8 +17,6 @@ export interface TestProxyOptions {
   readonly apiKey?: string
   readonly logLevel?: 'debug' | 'info' | 'warn' | 'error'
 }
-
-// ── Factory ─────────────────────────────────────────────────────────────────
 
 /**
  * Starts a test proxy server backed by the given upstream URL.
