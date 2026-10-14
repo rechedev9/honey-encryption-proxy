@@ -1,7 +1,3 @@
-/**
- * Tests for the DTE (corpus-based) and FPE modules.
- */
-
 import { describe, it, expect } from 'bun:test'
 import { encode, decode, decodeEntry } from '../src/honey/dte-corpus.ts'
 import { CORPUS_SIZE } from '../src/corpus/index.ts'
@@ -16,8 +12,6 @@ import {
 import { extractCodeBlocks, extractIdentifiers, stripComments } from '../src/ast/extractor.ts'
 import { obfuscateText, deobfuscateText } from '../src/ast/mapper.ts'
 import { deriveSessionKey } from '../src/honey/key-manager.ts'
-
-// ── DTE ───────────────────────────────────────────────────────────────────────
 
 describe('DTE corpus', () => {
   const key = Buffer.alloc(32, 0x42)
@@ -68,8 +62,6 @@ describe('DTE corpus', () => {
     expect(typeof entry.code).toBe('string')
   })
 })
-
-// ── FPE ──────────────────────────────────────────────────────────────────────
 
 describe('FPE identifier mapping', () => {
   const fpeKey = Buffer.alloc(32, 0x11)
@@ -238,13 +230,10 @@ describe('FPE identifier mapping', () => {
       const mapping = mappingResult.value
 
       const obfuscated = applyMapping(code, mapping.realToFake)
-      // processDataHelper must NOT be replaced (it is not in the mapping)
       expect(obfuscated.includes('processDataHelper')).toBe(true)
     })
   })
 })
-
-// ── Extractor ────────────────────────────────────────────────────────────────
 
 describe('Code block extractor', () => {
   it('extracts fenced code blocks', () => {
@@ -274,12 +263,9 @@ describe('Code block extractor', () => {
 
     expect(ids.has('InvoiceProcessor')).toBe(true)
     expect(ids.has('calculateTax')).toBe(true)
-    // builtins / keywords must be excluded
     expect(ids.has('class')).toBe(false)
   })
 })
-
-// ── stripComments ────────────────────────────────────────────────────────────
 
 describe('stripComments', () => {
   it('removes line comments', () => {
@@ -317,8 +303,6 @@ describe('stripComments', () => {
     expect(stripped.includes('const z = 3')).toBe(true)
   })
 })
-
-// ── obfuscateStringLiterals ───────────────────────────────────────────────────
 
 describe('obfuscateStringLiterals', () => {
   const fpeKey = Buffer.alloc(32, 0x44)
@@ -362,7 +346,6 @@ describe('obfuscateStringLiterals', () => {
     expect(mappingResult.ok).toBe(true)
     if (!mappingResult.ok) return
     const mapping = mappingResult.value
-    // "invoiceId" is not the same as "invoice"
     const code = 'const f = "invoiceId"'
     expect(obfuscateStringLiterals(code, mapping.realToFake)).toBe(code)
   })
@@ -379,8 +362,6 @@ describe('obfuscateStringLiterals', () => {
     expect(restored).toBe(code)
   })
 })
-
-// ── buildNumericMapping ───────────────────────────────────────────────────────
 
 describe('buildNumericMapping', () => {
   const fpeKey = Buffer.alloc(32, 0x33)
@@ -422,7 +403,7 @@ describe('buildNumericMapping', () => {
 
   it('different keys produce different fakes', () => {
     const code = 'const vat = 0.21'
-    const key2 = Buffer.alloc(32, 0x66)  // 0x66 produces 0.11, distinct from 0x33's 0.31
+    const key2 = Buffer.alloc(32, 0x66)
     const m1 = buildNumericMapping(code, fpeKey)
     const m2 = buildNumericMapping(code, key2)
     expect(m1.realToFake.get('0.21')).not.toBe(m2.realToFake.get('0.21'))
@@ -453,23 +434,18 @@ describe('buildNumericMapping', () => {
   })
 })
 
-// ── AST extraction integration ────────────────────────────────────────────────
-
 describe('AST extraction — integration with obfuscateText', () => {
   it('does NOT obfuscate identifier names that appear only inside string literals', () => {
     const keyResult = deriveSessionKey('ast-integration-test')
     expect(keyResult.ok).toBe(true)
     if (!keyResult.ok) return
 
-    // "PaymentGateway" is a string literal value — AST extraction excludes it.
-    // Regex extraction would include it, causing the string to be obfuscated too.
     const text = '```typescript\nconst gateway = "PaymentGateway"\n```'
     const obfResult = obfuscateText(text, keyResult.value)
     expect(obfResult.ok).toBe(true)
     if (!obfResult.ok) return
     const { obfuscated } = obfResult.value
 
-    // The string literal "PaymentGateway" must remain unchanged
     expect(obfuscated.includes('"PaymentGateway"')).toBe(true)
   })
 
@@ -485,7 +461,6 @@ describe('AST extraction — integration with obfuscateText', () => {
     if (!obfResult.ok) return
     const { obfuscated } = obfResult.value
 
-    // The class name in code position must be obfuscated
     expect(obfuscated.includes('PaymentGateway')).toBe(false)
   })
 
@@ -528,8 +503,6 @@ describe('AST extraction — integration with obfuscateText', () => {
   })
 })
 
-// ── Mapper end-to-end ─────────────────────────────────────────────────────────
-
 describe('obfuscateText / deobfuscateText', () => {
   it('round-trips a prompt with code blocks', () => {
     const keyResult = deriveSessionKey('mapper-test')
@@ -545,7 +518,6 @@ describe('obfuscateText / deobfuscateText', () => {
     const { obfuscated, mapping } = obfResult.value
 
     expect(obfuscated).not.toBe(text)
-    // Real class name must not appear in outgoing text
     expect(obfuscated.includes('InvoiceProcessor')).toBe(false)
 
     const restored = deobfuscateText(obfuscated, mapping)
