@@ -1,10 +1,3 @@
-/**
- * Corpus manager.
- *
- * Provides a stable indexed access layer over the embedded corpus so the
- * DTE can map any seed value to a deterministic, plausible code snippet.
- */
-
 import { CORPUS } from './data.ts'
 import type { CorpusEntry } from './data.ts'
 
@@ -23,9 +16,6 @@ export function getEntry(index: number): CorpusEntry {
   return entry
 }
 
-/**
- * Returns the code string at the given index.
- */
 export function getCode(index: number): string {
   return getEntry(index).code
 }

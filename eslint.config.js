@@ -1,16 +1,7 @@
 import parentConfigs from '../../eslint.config.js'
 
-/**
- * Project-level ESLint config.
- *
- * Inherits all rules from the parent (strict TypeScript rules) and overrides:
- *   - tsconfigRootDir: points to this project's tsconfig.json
- *   - Test files: relaxes assertion, unsafe-any, and dynamic-delete rules
- *     consistent with CLAUDE.md ("as Type allowed in test files").
- */
 export default [
   ...parentConfigs,
-  // Override TypeScript language service root to this project
   {
     languageOptions: {
       parserOptions: {
@@ -19,7 +10,6 @@ export default [
       },
     },
   },
-  // Test file relaxations (see CLAUDE.md Type Strictness section)
   {
     files: ['tests/**/*.test.ts', 'tests/setup.ts', 'tests/helpers/**/*.ts'],
     rules: {

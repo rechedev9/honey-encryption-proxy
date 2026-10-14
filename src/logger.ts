@@ -1,8 +1,3 @@
-/**
- * Minimal structured logger.
- * Replaces console.log in production code per project conventions.
- */
-
 type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 interface LogEntry {
