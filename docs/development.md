@@ -6,9 +6,9 @@ Source layout, tests, and the roadmap. Moved from the "Project structure", "Deve
 
 ```bash
 bun install
-bun test                                   # all tests
-bun test tests/stream-deobfuscator.test.ts # one file
-bun run dev                                # runs src/proxy.ts, needs the env vars from the README
+bun test
+bun test tests/stream-deobfuscator.test.ts
+bun run dev
 ```
 
 Other scripts in `package.json`: `typecheck` (`tsc --noEmit`), `lint` (`bunx eslint src tests`), `format:check` (`bunx prettier --check src tests`), `build` (`bun build src/proxy.ts --outdir dist --target bun`) and `ci` (`typecheck` then `test`).
@@ -32,8 +32,8 @@ Known state of a fresh clone, checked while writing this page:
 | `tests/audit.test.ts` | 9 | JSONL writer and signatures |
 | `tests/stream-integration.test.ts` | 9 | SSE through the handler |
 | `tests/logger.test.ts` | 7 | Level filtering |
-| `tests/stream-deobfuscator.test.ts` | 7 | Chunk boundaries |
-| `tests/e2e-smoke.test.ts` | 5 | Starts the real process: ready log, public key log, SIGTERM, missing passphrase |
+| `tests/stream-deobfuscator.test.ts` | 9 | Chunk boundaries and the pending-byte cap |
+| `tests/e2e-smoke.test.ts` | 6 | Starts the real process: ready log, public key log, SIGTERM, missing passphrase, home-directory check |
 
 `tests/setup.ts` is preloaded (see `bunfig.toml`) and initialises tree-sitter. `tests/helpers/` holds a stub Anthropic server and a test proxy that uses `createProxyHandler`. To see exactly what the proxy forwards, start the stub and the test proxy from those helpers, send a request, and read `stub.lastRequestBody()`; `tests/proxy-integration.test.ts` shows how. The upstream URL in the real proxy must be `https://`, so the stub is only reachable through the test proxy.
 

@@ -113,7 +113,7 @@ A number is replaced unless it is in one of these sets:
 
 ```
 hash   = HMAC-SHA256(fpeKey, "num:<numStr>:<offset>")
-factor = 0.5 + readUInt32BE(hash) / 2^32          # in [0.5, 1.5)
+factor = 0.5 + readUInt32BE(hash) / 2^32
 float  : (value * factor).toFixed(same number of decimals)
 integer: a different integer with the same number of digits
 ```
@@ -130,7 +130,7 @@ Restoring is a plain text replacement, so it has limits that are listed in the [
 
 ## Streaming
 
-For a streamed reply, `StreamDeobfuscator` (`src/stream-deobfuscator.ts`) reads the upstream body, buffers it, and splits it on blank lines (`\n\n`, the end of an SSE event). Each complete event is restored and sent on right away. The trailing incomplete part is held back until the next network chunk arrives or the stream ends, so a stand-in cut in half by a network chunk boundary is still restored. If no event delimiter arrives within 2 MiB of buffered text, the buffer is sent on without restoring.
+For a streamed reply, `StreamDeobfuscator` (`src/stream-deobfuscator.ts`) reads the upstream body, buffers it, and splits it on blank lines (`\n\n`, the end of an SSE event). Each complete event is restored and sent on right away. The trailing incomplete part is held back until the next network chunk arrives or the stream ends, so a stand-in cut in half by a network chunk boundary is still restored. If no event delimiter arrives within 2 MiB of buffered text, the stream fails instead of sending that buffer on unrestored.
 
 Each event is restored on its own. A stand-in that Anthropic splits across two `content_block_delta` events (for example `Worker` in one event and `Global` in the next) is not recognised and reaches Claude Code as the stand-in.
 
