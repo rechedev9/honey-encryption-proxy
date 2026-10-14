@@ -1,11 +1,3 @@
-/**
- * Unit tests for the obfuscation pipeline (mapper-level).
- *
- * These tests exercise the full obfuscate → deobfuscate cycle at the message
- * level, without starting an actual HTTP server or calling Anthropic.
- * For HTTP-level integration tests, see proxy-integration.test.ts.
- */
-
 import { describe, it, expect } from 'bun:test'
 import { obfuscateText, deobfuscateText } from '../src/ast/mapper.ts'
 import { deriveSessionKey } from '../src/honey/key-manager.ts'
@@ -18,8 +10,6 @@ function makeKey(): SessionKey {
   if (!result.ok) throw new Error('Key derivation failed')
   return result.value
 }
-
-// ── Message-level transformation ──────────────────────────────────────────────
 
 describe('Proxy message pipeline', () => {
   describe('user message obfuscation', () => {
@@ -36,10 +26,8 @@ describe('Proxy message pipeline', () => {
       expect(obfuscated.includes('PaymentGatewayService')).toBe(false)
       expect(obfuscated.includes('processRefund')).toBe(false)
 
-      // Prose outside code fence is not obfuscated
       expect(obfuscated.includes('Can you improve it?')).toBe(true)
 
-      // Reverse mapping restores everything
       const restored = deobfuscateText(obfuscated, mapping)
       expect(restored).toBe(userMsg)
     })
@@ -53,7 +41,6 @@ describe('Proxy message pipeline', () => {
       if (!obfResult.ok) return
       const { obfuscated } = obfResult.value
 
-      // Structural syntax is preserved
       expect(obfuscated.includes('if (')).toBe(true)
       expect(obfuscated.includes('return')).toBe(true)
       expect(obfuscated.includes('{')).toBe(true)
@@ -94,7 +81,6 @@ describe('Proxy message pipeline', () => {
       expect(r2.ok).toBe(true)
       if (!r1.ok || !r2.ok) return
 
-      // Same key → same fake identifiers
       expect(r1.value.obfuscated).toBe(r2.value.obfuscated)
     })
   })
@@ -109,7 +95,6 @@ describe('Proxy message pipeline', () => {
       if (!obfResult.ok) return
       const { mapping } = obfResult.value
 
-      // Simulate Claude echoing the fake names in its response
       const fakeClassName = mapping.realToFake.get('InvoiceService') ?? 'InvoiceService'
       const fakePdfMethod = mapping.realToFake.get('generatePdf') ?? 'generatePdf'
 
