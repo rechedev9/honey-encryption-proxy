@@ -1,16 +1,3 @@
-/**
- * Configuration loader.
- *
- * Required env vars:
- *   ANTHROPIC_API_KEY  – real Anthropic key (forwarded to api.anthropic.com)
- *   HONEY_PASSPHRASE   – passphrase for session key derivation
- *
- * Optional env vars:
- *   PROXY_PORT         – local listen port (default 8080)
- *   ANTHROPIC_BASE_URL_UPSTREAM – upstream base URL (default https://api.anthropic.com)
- *   LOG_LEVEL          – debug | info | warn | error (default info)
- */
-
 import { err, ok } from './types.ts'
 import type { Result } from './types.ts'
 
