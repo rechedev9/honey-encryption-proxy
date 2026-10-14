@@ -9,18 +9,17 @@ Read this first: of everything on this page, only the key derivation and the HMA
 One passphrase produces three independent 32-byte keys. An ML-KEM-768 step can be mixed in.
 
 ```
-masterKey = scrypt(passphrase, salt, N=65536, r=8, p=1)    # 64 MiB of memory per derivation
+masterKey = scrypt(passphrase, salt, N=65536, r=8, p=1)
 
-# ML-KEM-768 keypair, derived from masterKey and the salt
 kyberSeed  = HKDF(masterKey, salt, "honey:kyber:seed:v1", 64)
-(pk, sk)   = ml_kem768.keygen(kyberSeed)                   # pk is logged at startup
+(pk, sk)   = ml_kem768.keygen(kyberSeed)
 if HONEY_KYBER_CAPSULE:
   ss        = ml_kem768.decapsulate(capsule, sk)
   masterKey = masterKey XOR HKDF(ss, salt, "honey:kyber:hybrid:v1", 32)
 
-fpeKey = HKDF(masterKey, salt, "honey:fpe:v1")        # name and number mapping
-key    = HKDF(masterKey, salt, "honey:aes-ctr:v1")    # Honey Encryption engine only
-macKey = HKDF(masterKey, salt, "honey:hmac:v1")       # engine integrity tag, audit signing seed
+fpeKey = HKDF(masterKey, salt, "honey:fpe:v1")
+key    = HKDF(masterKey, salt, "honey:aes-ctr:v1")
+macKey = HKDF(masterKey, salt, "honey:hmac:v1")
 ```
 
 The salt is 32 random bytes generated each time the proxy starts. It is never written to disk. The same passphrase therefore gives different keys, and a different mapping, on every start, and a past session cannot be re-derived later. The master key and the ML-KEM seed and secret key are zeroed after use; the three sub-keys are zeroed on shutdown. A JavaScript string such as the passphrase cannot be zeroed. `ANTHROPIC_API_KEY` and `HONEY_PASSPHRASE` are deleted from `process.env` after they are read.
@@ -44,14 +43,14 @@ LWE parameters: n=128, q=7681, B=5, M=52 (corpus size), scale = floor(q/M) = 147
 (the code comments call these demo-grade and say production LWE would use n >= 512)
 
 Encrypt(code, session):
-  index   = HMAC-SHA256(key, code) mod M                   # the corpus index
+  index   = HMAC-SHA256(key, code) mod M
   nonce   = random(16 bytes)
-  a       = [HMAC(key, nonce || "lwe:a:i:attempt") mod q  for i in 0..n-1]   # rejection sampled
-  s       = [HMAC(fpeKey, "lwe:s:i:attempt") mod q        for i in 0..n-1]   # rejection sampled
-  e       = (HMAC(fpeKey, nonce || "lwe:e:0") mod 11) - 5                    # in [-5, 5]
+  a       = [HMAC(key, nonce || "lwe:a:i:attempt") mod q  for i in 0..n-1]
+  s       = [HMAC(fpeKey, "lwe:s:i:attempt") mod q        for i in 0..n-1]
+  e       = (HMAC(fpeKey, nonce || "lwe:e:0") mod 11) - 5
   b       = (a.s + e + scale * index) mod q
   tag     = HMAC-SHA256(macKey, nonce || b)
-  payload = 0x02 || tag(32) || nonce(16) || b_uint16BE(2)    # 51 bytes, base64url encoded
+  payload = 0x02 || tag(32) || nonce(16) || b_uint16BE(2)
 
 Decrypt(payload, session):
   verify tag with a timing-safe compare, else the generic error "Decryption failed"

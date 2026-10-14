@@ -1,18 +1,6 @@
-/**
- * Tests for the Honey Encryption engine and key derivation.
- *
- * Verifies:
- *  - v2 LWE encrypt → decrypt round-trip (new default format)
- *  - v1 legacy AES-CTR decrypt still works (backward compat)
- *  - v0 legacy decrypt (no version byte) still works
- *  - Honey property: wrong-key decryptions are plausible
- *  - HMAC tamper detection
- *  - ML-KEM-768 public key present in toJSON()
- */
-
 import { describe, it, expect } from 'bun:test'
 import { randomBytes, createCipheriv, createHmac } from 'node:crypto'
-import { encrypt, decrypt, decryptHoneyUnsafe, FORMAT_VERSION, FORMAT_VERSION_V2 } from '../src/honey/engine.ts'
+import { encrypt, decrypt, decryptHoneyUnsafe, FORMAT_VERSION_V1, FORMAT_VERSION_V2 } from '../src/honey/engine.ts'
 import { deriveSessionKey, deriveFromSalt } from '../src/honey/key-manager.ts'
 import { CORPUS_SIZE } from '../src/corpus/index.ts'
 import { encode as dteEncode, indexToBytes } from '../src/honey/dte-corpus.ts'
@@ -91,14 +79,13 @@ describe('HoneyEngine', () => {
       expect(keyResult.ok).toBe(true)
       if (!keyResult.ok) return
 
-      // Manually build a v1 payload: 0x01 || nonce(16) || HMAC(32) || ciphertext(4)
       const nonce = randomBytes(16)
       const index = dteEncode(SAMPLE_CODE, keyResult.value.key)
       const plainBytes = indexToBytes(index)
       const cipher = createCipheriv('aes-256-ctr', keyResult.value.key, nonce)
       const ct = Buffer.concat([cipher.update(plainBytes), cipher.final()])
       const tag = createHmac('sha256', keyResult.value.macKey).update(nonce).update(ct).digest()
-      const v1Payload = Buffer.concat([Buffer.from([FORMAT_VERSION]), nonce, tag, ct])
+      const v1Payload = Buffer.concat([Buffer.from([FORMAT_VERSION_V1]), nonce, tag, ct])
 
       const decResult = decrypt({ encoded: v1Payload.toString('base64url') }, keyResult.value)
       expect(decResult.ok).toBe(true)
@@ -112,7 +99,6 @@ describe('HoneyEngine', () => {
       expect(keyResult.ok).toBe(true)
       if (!keyResult.ok) return
 
-      // Manually build a v0 payload (nonce || tag || ciphertext, no version byte)
       const nonce = randomBytes(16)
       const index = dteEncode(SAMPLE_CODE, keyResult.value.key)
       const plainBytes = indexToBytes(index)
@@ -162,7 +148,6 @@ describe('HoneyEngine', () => {
         decoys.add(decryptHoneyUnsafe(encResult.value, wrongKey))
       }
 
-      // With 20 random keys and CORPUS_SIZE entries, we expect >1 distinct decoy
       expect(decoys.size).toBeGreaterThan(1)
     })
 
@@ -253,7 +238,6 @@ describe('HoneyEngine', () => {
       expect(a.ok && b.ok).toBe(true)
       if (!a.ok || !b.ok) return
 
-      // Fresh salt each call → distinct KEM keypair
       expect(a.value.toJSON().mlkemPublicKey).not.toBe(b.value.toJSON().mlkemPublicKey)
     })
 

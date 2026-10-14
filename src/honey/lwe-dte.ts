@@ -8,54 +8,62 @@
  *   Encrypt: b = (a·s + e + ⌊q/M⌋·m) mod q
  *   Decrypt: diff = (b − a·s) mod q  →  round(diff / ⌊q/M⌋) mod M
  *   Honey:   wrong s' ⟹ a·(s−s') ≈ uniform(Z_q) ⟹ index ≈ uniform({0,...,M−1})
- *
- * Parameters:
- *   n = 128   — vector dimension (demo-grade; production LWE uses n≥512)
- *   q = 7681  — prime modulus  (log₂q ≈ 13)
- *   B = 5     — error bound    |e| ≤ 5 << ⌊q/M⌋/2 ≈ 76 ✓
- *   M         — corpus size    (~50)
  */
 
 import { createHmac, randomBytes } from 'node:crypto'
 import { CORPUS_SIZE } from '../corpus/index.ts'
 
-// ── LWE parameters ───────────────────────────────────────────────────────────
-
 const LWE_N = 128          // vector dimension (demo-grade; production LWE uses n≥512)
-const LWE_Q = 7681        // prime modulus; ⌊q/M⌋ ≈ 153 for M≈50
-/** Rejection limit: largest multiple of LWE_Q that fits in uint32. */
+const LWE_Q = 7681
 const REJECTION_LIMIT = Math.floor(4294967296 / LWE_Q) * LWE_Q
-const LWE_B = 5           // error bound; |e| ≤ B << ⌊q/M⌋/2 ≈ 76
-const NONCE_BYTES = 16    // bytes of randomness for each LWE encryption
+const LWE_B = 5
+const NONCE_BYTES = 16
 
-// ── Internal helpers ─────────────────────────────────────────────────────────
+class Uint16 {
+  readonly value: number
 
-/**
- * Dot product of two n-vectors, reduced mod q.
- * Uses `?? 0` to satisfy noUncheckedIndexedAccess without non-null assertions.
- */
-function dotMod(a: readonly number[], s: readonly number[]): number {
+  constructor(value: number) {
+    if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+      throw new RangeError(`value ${value} is outside uint16`)
+    }
+    this.value = value
+  }
+}
+
+class LweVector {
+  readonly #components: readonly number[]
+
+  constructor(components: readonly number[]) {
+    if (components.length !== LWE_N) {
+      throw new Error(`LWE vector length ${components.length} is not ${LWE_N}`)
+    }
+    this.#components = components
+  }
+
+  component(index: number): number {
+    const value = this.#components[index]
+    if (value === undefined) {
+      throw new Error(`LWE vector index ${index} is out of range`)
+    }
+    return value
+  }
+}
+
+function dotMod(a: LweVector, s: LweVector): number {
   let sum = 0
   for (let i = 0; i < LWE_N; i++) {
-    sum = (sum + (a[i] ?? 0) * (s[i] ?? 0)) % LWE_Q
+    sum = (sum + a.component(i) * s.component(i)) % LWE_Q
   }
   return sum
 }
 
-/** Samples an error e ∈ [−B, B] deterministically from HMAC(secretKey, nonce || index). */
 function sampleError(secretKey: Buffer, nonce: Buffer, index: number): number {
   const h = createHmac('sha256', secretKey).update(nonce).update(`lwe:e:${index}`).digest()
   const raw = (h.readUInt32BE(0)) % (2 * LWE_B + 1)
   return raw - LWE_B
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
-
-/**
- * Derives the secret vector s ∈ Z_q^n deterministically from fpeKey.
- * s[i] = HMAC-SHA256(fpeKey, "lwe:s:<i>") mod q
- */
-function deriveSecretVector(fpeKey: Buffer): readonly number[] {
+function deriveSecretVector(fpeKey: Buffer): LweVector {
   const s: number[] = []
   for (let i = 0; i < LWE_N; i++) {
     for (let attempt = 0; ; attempt++) {
@@ -67,14 +75,10 @@ function deriveSecretVector(fpeKey: Buffer): readonly number[] {
       }
     }
   }
-  return s
+  return new LweVector(s)
 }
 
-/**
- * Derives the public vector a ∈ Z_q^n from key + nonce deterministically.
- * a[i] = HMAC-SHA256(key, nonce || "lwe:a:<i>") mod q
- */
-function derivePublicVector(key: Buffer, nonce: Buffer): readonly number[] {
+function derivePublicVector(key: Buffer, nonce: Buffer): LweVector {
   const a: number[] = []
   for (let i = 0; i < LWE_N; i++) {
     for (let attempt = 0; ; attempt++) {
@@ -86,13 +90,12 @@ function derivePublicVector(key: Buffer, nonce: Buffer): readonly number[] {
       }
     }
   }
-  return a
+  return new LweVector(a)
 }
 
 interface LweEncrypted {
   readonly nonce: Buffer
-  /** LWE ciphertext scalar b ∈ [0, q−1], fits in uint16. */
-  readonly b: number
+  readonly b: Uint16
 }
 
 /**
@@ -107,7 +110,7 @@ export function lweEncrypt(index: number, key: Buffer, fpeKey: Buffer): LweEncry
   const s = deriveSecretVector(fpeKey)
   const e = sampleError(fpeKey, nonce, 0)
   const normalised = ((index % M) + M) % M
-  const b = ((dotMod(a, s) + e + scale * normalised) % LWE_Q + LWE_Q) % LWE_Q
+  const b = new Uint16(((dotMod(a, s) + e + scale * normalised) % LWE_Q + LWE_Q) % LWE_Q)
   return { nonce, b }
 }
 

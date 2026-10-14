@@ -1,7 +1,3 @@
-/**
- * Tests for log-level filtering.
- */
-
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test'
 import { logger, setLogLevel, getLogLevel } from '../src/logger.ts'
 

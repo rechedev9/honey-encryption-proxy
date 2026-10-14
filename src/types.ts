@@ -1,9 +1,3 @@
-/**
- * Core shared types for the Honey Encryption proxy.
- */
-
-// ── Result<T, E> ────────────────────────────────────────────────────────────
-
 interface Ok<T> { readonly ok: true; readonly value: T }
 interface Err<E> { readonly ok: false; readonly error: E }
 export type Result<T, E = Error> = Ok<T> | Err<E>
@@ -15,8 +9,6 @@ export function ok<T>(value: T): Ok<T> {
 export function err<E>(error: E): Err<E> {
   return { ok: false, error }
 }
-
-// ── Session key ─────────────────────────────────────────────────────────────
 
 export interface SessionKey {
   /** 32-byte AES key for CTR encryption of DTE seed */
@@ -42,8 +34,6 @@ export interface SessionKey {
   }
 }
 
-// ── Code extraction ─────────────────────────────────────────────────────────
-
 export interface CodeBlock {
   /** Raw code content (without the fence markers) */
   readonly content: string
@@ -55,14 +45,10 @@ export interface CodeBlock {
   readonly endOffset: number
 }
 
-// ── Identifier mapping ──────────────────────────────────────────────────────
-
 export interface IdentifierMapping {
   readonly realToFake: ReadonlyMap<string, string>
   readonly fakeToReal: ReadonlyMap<string, string>
 }
-
-// ── Audit ────────────────────────────────────────────────────────────────────
 
 export interface AuditEntry {
   readonly timestamp: string
@@ -78,4 +64,3 @@ export interface AuditEntry {
   /** Signing algorithm used, e.g. 'slh-dsa-sha2-128s'. */
   readonly sigAlgorithm?: string
 }
-

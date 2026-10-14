@@ -1,11 +1,3 @@
-/**
- * High-level code mapper.
- *
- * Combines extractor + FPE to produce an obfuscated version of any text
- * containing code blocks, and exposes the reverse operation for response
- * post-processing.
- */
-
 import {
   buildIdentifierMapping,
   buildNumericMapping,
@@ -28,15 +20,11 @@ export interface ObfuscationStats {
 }
 
 interface MapResult {
-  /** Text with code blocks obfuscated (fake identifiers). */
   readonly obfuscated: string
-  /** Bidirectional identifier mapping for this request. */
   readonly mapping: IdentifierMapping
-  /** Counts of obfuscated items for audit logging. */
   readonly stats: ObfuscationStats
 }
 
-/** Strips comments and collects identifiers from a set of code blocks. */
 function collectFromBlocks(
   blocks: readonly CodeBlock[],
   identifiers: Set<string>,
@@ -51,18 +39,10 @@ function collectFromBlocks(
   }
 }
 
-/**
- * Obfuscates all code blocks found in  using FPE.
- *
- * Steps:
- *  1. Extract fenced code blocks.
- *  2. Collect all unique user-defined identifiers.
- *  3. Build a deterministic fake→real mapping via FPE.
- *  4. Replace real identifiers with fake ones inside each code block.
- *
- * Non-code text (prose) is left untouched so Claude can still understand
- * the question context.
- */
+function obfuscateProse(text: string, realToFake: ReadonlyMap<string, string>): string {
+  return applyMapping(text, realToFake)
+}
+
 export function obfuscateText(text: string, sessionKey: SessionKey): Result<MapResult> {
   const blocks = extractCodeBlocks(text)
 
@@ -78,13 +58,10 @@ export function obfuscateText(text: string, sessionKey: SessionKey): Result<MapR
     })
   }
 
-  // 1. Strip comments before extraction so comment words are never collected
-  //    as identifiers and comment content never reaches Anthropic.
   const identifiers = new Set<string>()
   const strippedParts: string[] = []
   collectFromBlocks(blocks, identifiers, strippedParts)
 
-  // 2. Build identifier and numeric mappings, then merge them.
   const identifierMappingResult = buildIdentifierMapping(identifiers, sessionKey.fpeKey)
   if (!identifierMappingResult.ok) {
     return err(identifierMappingResult.error)
@@ -97,17 +74,13 @@ export function obfuscateText(text: string, sessionKey: SessionKey): Result<MapR
     fakeToReal: new Map([...identifierMapping.fakeToReal, ...numericMapping.fakeToReal]),
   }
 
-  // 3. Transform each code block: strip comments → apply all mappings →
-  //    obfuscate exact-match string literals.
   const codeObfuscated = transformCodeBlocks(text, (block) => {
     const stripped = stripComments(block.content)
     const applied = applyMapping(stripped, fullMapping.realToFake)
     return obfuscateStringLiterals(applied, identifierMapping.realToFake)
   })
 
-  // Also apply the mapping to prose text outside code blocks so real
-  // identifiers in natural-language context never reach Anthropic.
-  const obfuscated = applyMapping(codeObfuscated, fullMapping.realToFake)
+  const obfuscated = obfuscateProse(codeObfuscated, fullMapping.realToFake)
 
   const stats: ObfuscationStats = {
     identifiersObfuscated: identifierMapping.realToFake.size,
@@ -181,10 +154,6 @@ export function buildGlobalMapping(
  * Applies a pre-built mapping to the full text: code blocks get comment
  * stripping + full mapping + string-literal obfuscation; prose outside
  * code blocks gets identifier+numeric mapping applied (word-boundary safe).
- *
- * This fixes the prose-leakage finding: real identifiers that appear in
- * natural-language context are obfuscated with the same fake names used
- * inside code fences, so Anthropic never sees real names in prose either.
  */
 export function applyMappingToFullText(
   text: string,
@@ -193,15 +162,13 @@ export function applyMappingToFullText(
 ): string {
   if (mapping.realToFake.size === 0) return text
 
-  // Step 1: transform code blocks (strip comments + full mapping + string literals)
   const withCodeObfuscated = transformCodeBlocks(text, (block) => {
     const stripped = stripComments(block.content)
     const applied = applyMapping(stripped, mapping.realToFake)
     return obfuscateStringLiterals(applied, identifierRealToFake)
   })
 
-  // Step 2: apply the mapping to prose text outside code blocks.
   // Code blocks are already transformed — the real identifiers are gone from
   // them so a second pass does not double-replace anything.
-  return applyMapping(withCodeObfuscated, mapping.realToFake)
+  return obfuscateProse(withCodeObfuscated, mapping.realToFake)
 }

@@ -1,36 +1,9 @@
-/**
- * Code block and identifier extractor.
- *
- * Identifier extraction uses web-tree-sitter AST when available (precise —
- * ignores string literal contents and comments) with a regex fallback for
- * unsupported languages or when tree-sitter is uninitialised.
- *
- * Extracts:
- *  - Fenced code blocks from Markdown/prompt text (``` ... ```)
- *  - User-defined identifiers from code text
- */
-
 import type { CodeBlock } from '../types.ts'
 import { shouldObfuscate } from '../honey/fpe.ts'
 import { extractIdentifiersAST } from './tree-sitter.ts'
 
-// ── Comment stripping ────────────────────────────────────────────────────────
-
-// Matches: double-quoted string | single-quoted string | template literal |
-//          block comment | line comment — in priority order so string contents
-//          are never misidentified as comments.
-// Using RegExp constructor (not a regex literal) to avoid parser ambiguity
-// with the backtick character inside the pattern.
-const STRIP_REGEX = new RegExp(
-  [
-    '"(?:[^"\\\\]|\\\\.)*"',   // double-quoted string
-    "'(?:[^'\\\\]|\\\\.)*'",   // single-quoted string
-    '`(?:[^`\\\\]|\\\\.)*`',   // template literal (backtick is safe inside single quotes)
-    '/\\*[\\s\\S]*?\\*/',      // block comment
-    '//[^\\n]*',               // line comment
-  ].join('|'),
-  'g',
-)
+const STRIP_REGEX =
+  /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g
 
 /**
  * Removes // and block comments from source code.
@@ -43,19 +16,13 @@ export function stripComments(code: string): string {
   return code.replace(STRIP_REGEX, (match: string): string => {
     // String literals are the only alternatives that don't start with /
     if (!match.startsWith('/')) return match
-    // Block comment — replace non-newline chars with spaces to preserve line numbers
     if (match.charAt(1) === '*') return match.replace(/[^\n]/g, ' ')
-    // Line comment — remove entirely
     return ''
   })
 }
 
-// ── Code block extraction ────────────────────────────────────────────────────
-
-// Two separate patterns — one for backtick fences, one for tilde fences.
-// RegExp constructors used to avoid backtick/tilde-in-regex-literal parse issues.
-const FENCE_REGEX_BACKTICK = new RegExp('^```([^\\n`]*)\\n([\\s\\S]*?)^```', 'gm')
-const FENCE_REGEX_TILDE = new RegExp('^~~~([^\\n~]*)\\n([\\s\\S]*?)^~~~', 'gm')
+const FENCE_REGEX_BACKTICK = /^```([^\n`]*)\n([\s\S]*?)^```/gm
+const FENCE_REGEX_TILDE = /^~~~([^\n~]*)\n([\s\S]*?)^~~~/gm
 
 function extractFencedBlocks(text: string, regex: RegExp, out: CodeBlock[]): void {
   regex.lastIndex = 0
@@ -97,25 +64,19 @@ export function transformCodeBlocks(
   let cursor = 0
 
   for (const block of blocks) {
-    // Append text before this block
     parts.push(text.slice(cursor, block.startOffset))
 
-    // Reconstruct the fence with transformed content
     const transformed = transform(block)
     parts.push(`\`\`\`${block.lang}\n${transformed}\`\`\``)
 
     cursor = block.endOffset
   }
 
-  // Append remaining text after last block
   parts.push(text.slice(cursor))
 
   return parts.join('')
 }
 
-// ── Identifier extraction ────────────────────────────────────────────────────
-
-// Matches any valid JS/TS identifier token.
 const IDENTIFIER_REGEX = /\b([A-Za-z_$][A-Za-z0-9_$]*)\b/g
 
 /**
@@ -153,4 +114,3 @@ export function extractIdentifiers(code: string, langTag = ''): ReadonlySet<stri
   if (astResult !== null) return astResult
   return extractIdentifiersRegex(code)
 }
-

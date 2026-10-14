@@ -1,11 +1,3 @@
-/**
- * SSE streaming integration tests.
- *
- * These tests verify that the proxy correctly handles streaming responses
- * from the Anthropic API, including chunk-boundary deobfuscation, [DONE]
- * terminators, and response headers.
- */
-
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test'
 import { startStubServer } from './helpers/stub-anthropic-server.ts'
 import { startTestProxy } from './helpers/test-proxy-server.ts'
@@ -44,8 +36,6 @@ describe('Streaming integration (SSE)', () => {
     })
   }
 
-  // ── Basic streaming ───────────────────────────────────────────────────
-
   describe('basic streaming', () => {
     it('streams SSE events from upstream to client', async () => {
       stub.setStreamResponse([
@@ -65,7 +55,6 @@ describe('Streaming integration (SSE)', () => {
     })
 
     it('deobfuscates identifiers in streamed text events', async () => {
-      // Step 1: discover the fake name via a fast buffered request
       stub.setResponse({
         body: makeAnthropicResponse('Noted.'),
       })
@@ -85,7 +74,6 @@ describe('Streaming integration (SSE)', () => {
       expect(fakeName).not.toBe('')
       expect(fakeName).not.toBe('PaymentGateway')
 
-      // Step 2: stream a response containing the fake name
       stub.setStreamResponse([
         { data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The ${fakeName} class is well-designed."}}` },
         { data: '[DONE]' },
@@ -116,7 +104,6 @@ describe('Streaming integration (SSE)', () => {
         { data: '[DONE]' },
       ])
 
-      // Message with no code blocks → empty mapping → passthrough
       const body = makeMessagesBody({
         messages: [{ role: 'user', content: 'Hello, how are you?' }],
         stream: true,
@@ -128,8 +115,6 @@ describe('Streaming integration (SSE)', () => {
     })
   })
 
-  // ── Response headers ──────────────────────────────────────────────────
-
   describe('response headers', () => {
     it('streaming response includes correct content-type', async () => {
       stub.setStreamResponse([
@@ -138,7 +123,7 @@ describe('Streaming integration (SSE)', () => {
       ])
 
       const res = await postStreaming(makeMessagesBody({ stream: true }))
-      await res.text() // consume
+      await res.text()
 
       expect(res.headers.get('content-type')).toBe('text/event-stream')
     })
@@ -149,14 +134,12 @@ describe('Streaming integration (SSE)', () => {
       ])
 
       const res = await postStreaming(makeMessagesBody({ stream: true }))
-      await res.text() // consume
+      await res.text()
 
       // x-request-id is NOT in the allowlist → should not appear
       expect(res.headers.get('x-request-id')).toBeNull()
     })
   })
-
-  // ── Edge cases ────────────────────────────────────────────────────────
 
   describe('edge cases', () => {
     it('stream: true in request body triggers streaming path', async () => {
@@ -172,7 +155,6 @@ describe('Streaming integration (SSE)', () => {
       const res = await postStreaming(body)
       const events = await consumeSSEStream(res)
 
-      // Should receive SSE events, not a buffered JSON response
       expect(events.length).toBeGreaterThanOrEqual(1)
     })
 
@@ -194,8 +176,6 @@ describe('Streaming integration (SSE)', () => {
     })
 
     it('handles upstream null body for stream gracefully', async () => {
-      // Configure stub to return a streaming content-type but with status 500
-      // which typically has no body
       stub.setResponse({
         status: 500,
         body: '',
@@ -205,7 +185,6 @@ describe('Streaming integration (SSE)', () => {
       const body = makeMessagesBody({ stream: true })
       const res = await postStreaming(body)
 
-      // Should not crash — returns the upstream status
       expect(res.status).toBe(500)
     })
   })

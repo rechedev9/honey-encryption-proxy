@@ -1,10 +1,3 @@
-/**
- * Tests for config loader edge cases.
- *
- * loadConfig() reads env vars and returns Result<Config>.
- * These tests verify validation boundaries that integration tests don't cover.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import { loadConfig } from '../src/config.ts'
 
@@ -24,7 +17,6 @@ describe('loadConfig', () => {
     for (const key of ENV_KEYS) {
       savedEnv[key] = process.env[key]
     }
-    // Minimal valid env
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key'
     process.env.HONEY_PASSPHRASE = 'test-passphrase'
     delete process.env.PROXY_PORT
@@ -42,8 +34,6 @@ describe('loadConfig', () => {
       }
     }
   })
-
-  // ── Required env vars ──────────────────────────────────────────────
 
   describe('required env vars', () => {
     it('returns error when ANTHROPIC_API_KEY is missing', () => {
@@ -73,8 +63,6 @@ describe('loadConfig', () => {
       }
     })
   })
-
-  // ── Port validation ────────────────────────────────────────────────
 
   describe('PROXY_PORT validation', () => {
     it('defaults to 8080 when not set', () => {
@@ -149,8 +137,6 @@ describe('loadConfig', () => {
     })
   })
 
-  // ── Log level ──────────────────────────────────────────────────────
-
   describe('LOG_LEVEL handling', () => {
     it('defaults to info when not set', () => {
       const result = loadConfig()
@@ -181,8 +167,6 @@ describe('loadConfig', () => {
     })
   })
 
-  // ── Upstream URL ───────────────────────────────────────────────────
-
   describe('ANTHROPIC_BASE_URL_UPSTREAM', () => {
     it('defaults to https://api.anthropic.com', () => {
       const result = loadConfig()
@@ -201,8 +185,6 @@ describe('loadConfig', () => {
       }
     })
   })
-
-  // ── ML-KEM-768 capsule ────────────────────────────────────────────
 
   describe('HONEY_KYBER_CAPSULE', () => {
     it('omits honeyKyberCapsule when env var is absent', () => {

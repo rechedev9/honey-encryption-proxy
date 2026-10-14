@@ -1,7 +1,3 @@
-/**
- * Tests for chunk-boundary-safe streaming deobfuscation.
- */
-
 import { describe, it, expect } from 'bun:test'
 import { StreamDeobfuscator } from '../src/stream-deobfuscator.ts'
 import type { IdentifierMapping } from '../src/types.ts'
@@ -29,11 +25,9 @@ describe('StreamDeobfuscator', () => {
     const mapping = makeMapping([['RealName', 'FakeName']])
     const deob = new StreamDeobfuscator(mapping)
 
-    // First chunk ends mid-identifier: "Fake"
     const r1 = deob.processChunk('data: {"text":"Fake')
-    expect(r1).toBe('') // buffered, no complete event yet
+    expect(r1).toBe('')
 
-    // Second chunk completes the event
     const r2 = deob.processChunk('Name"}\n\n')
     expect(r2).toBe('data: {"text":"RealName"}\n\n')
   })
@@ -86,5 +80,23 @@ describe('StreamDeobfuscator', () => {
     const deob = new StreamDeobfuscator(mapping)
 
     expect(deob.flush()).toBe('')
+  })
+
+  it('rejects an incomplete event past the pending cap', () => {
+    const mapping = makeMapping([['RealName', 'FakeName']])
+    const deob = new StreamDeobfuscator(mapping)
+    const chunk = 'FakeName' + 'x'.repeat(2 * 1024 * 1024)
+
+    expect(() => deob.processChunk(chunk)).toThrow(Error)
+  })
+
+  it('deobfuscates a complete event larger than the pending cap', () => {
+    const mapping = makeMapping([['RealName', 'FakeName']])
+    const deob = new StreamDeobfuscator(mapping)
+    const filler = 'x'.repeat(2 * 1024 * 1024)
+    const result = deob.processChunk(`data: {"text":"${filler} FakeName"}\n\n`)
+
+    expect(result).toContain('RealName')
+    expect(result).not.toContain('FakeName')
   })
 })

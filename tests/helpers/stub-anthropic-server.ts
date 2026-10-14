@@ -1,14 +1,4 @@
-/**
- * Stub Anthropic API server for integration tests.
- *
- * A real Bun HTTP server on port 0 (OS-assigned) that mimics Anthropic's
- * /v1/messages endpoint. Returns configurable buffered or SSE responses
- * and captures the last request for assertions.
- */
-
 import { makeAnthropicResponse, sseEvent } from './fixtures.ts'
-
-// ── Types ───────────────────────────────────────────────────────────────────
 
 export interface StubResponseConfig {
   readonly status?: number
@@ -19,30 +9,20 @@ export interface StubResponseConfig {
 
 export interface StubSSEEvent {
   readonly data: string
-  /** Milliseconds to wait before sending this event. */
   readonly delay?: number
 }
 
 export interface StubAnthropicServer {
   readonly url: string
   readonly port: number
-  /** Returns the raw body of the last received request. */
   readonly lastRequestBody: () => unknown
-  /** Returns the headers of the last received request. */
   readonly lastRequestHeaders: () => Headers
-  /** Returns how many requests have been received. */
   readonly requestCount: () => number
-  /** Configure the next buffered response. */
   readonly setResponse: (config: StubResponseConfig) => void
-  /** Configure the next SSE streaming response. */
   readonly setStreamResponse: (events: readonly StubSSEEvent[]) => void
-  /** Reset to default response and clear captured state. */
   readonly reset: () => void
-  /** Stop the server. */
   readonly stop: () => Promise<void>
 }
-
-// ── Implementation ──────────────────────────────────────────────────────────
 
 export function startStubServer(): StubAnthropicServer {
   let nextResponse: StubResponseConfig | null = null
@@ -60,7 +40,6 @@ export function startStubServer(): StubAnthropicServer {
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url)
 
-      // Capture request data
       count++
       capturedHeaders = req.headers
       try {
@@ -70,7 +49,6 @@ export function startStubServer(): StubAnthropicServer {
         capturedBody = null
       }
 
-      // ── GET passthrough (e.g. /v1/models) ─────────────────────────────
       if (req.method === 'GET') {
         if (url.pathname === '/v1/models') {
           return Response.json({
@@ -81,7 +59,6 @@ export function startStubServer(): StubAnthropicServer {
         return new Response('Not Found', { status: 404 })
       }
 
-      // ── SSE streaming ─────────────────────────────────────────────────
       if (nextStreamEvents !== null) {
         const events = nextStreamEvents
         nextStreamEvents = null
@@ -105,7 +82,6 @@ export function startStubServer(): StubAnthropicServer {
         })
       }
 
-      // ── Buffered JSON response ────────────────────────────────────────
       const cfg = nextResponse
       nextResponse = null
 
@@ -123,7 +99,6 @@ export function startStubServer(): StubAnthropicServer {
         )
       }
 
-      // Default: echo a response that mentions identifiers from the request
       return Response.json(makeAnthropicResponse(defaultResponseText))
     },
   })

@@ -1,11 +1,3 @@
-/**
- * Pure request-handling logic for the Honey Encryption proxy.
- *
- * Extracted from proxy.ts so integration tests can construct a handler
- * with dependency-injected config/keys without triggering module-level
- * side effects (scrypt, Bun.serve, process.exit, etc.).
- */
-
 import { buildGlobalMapping, applyMappingToFullText, deobfuscateText } from './ast/mapper.ts'
 import type { ObfuscationStats } from './ast/mapper.ts'
 import { logger } from './logger.ts'
@@ -14,16 +6,11 @@ import { StreamDeobfuscator } from './stream-deobfuscator.ts'
 import { ok, err } from './types.ts'
 import type { AuditEntry, IdentifierMapping, Result, SessionKey } from './types.ts'
 
-// ── Dependencies ────────────────────────────────────────────────────────────
-
-/** Dependencies injected into the proxy handler factory. */
 export interface ProxyHandlerDeps {
   readonly sessionKey: SessionKey
   readonly apiKey: string
   readonly upstreamBaseUrl: string
 }
-
-// ── Anthropic message type (minimal surface) ────────────────────────────────
 
 interface AnthropicTextBlock {
   readonly type: 'text'
@@ -31,7 +18,6 @@ interface AnthropicTextBlock {
   readonly [key: string]: unknown
 }
 
-/** Narrows unknown to a non-null JSON object record. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -42,9 +28,6 @@ function isTextBlock(item: unknown): item is AnthropicTextBlock {
   return item.type === 'text' && typeof item.text === 'string'
 }
 
-// ── Header allowlist ────────────────────────────────────────────────────────
-
-/** Headers forwarded from the client to the upstream Anthropic API. */
 const ALLOWED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
   'content-type',
   'anthropic-version',
@@ -53,7 +36,6 @@ const ALLOWED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
   'accept-encoding',
 ])
 
-/** Response headers forwarded from upstream back to the Claude Code client. */
 const ALLOWED_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   'content-type',
   'content-length',
@@ -71,25 +53,14 @@ function filterResponseHeaders(upstream: Headers): Headers {
   return filtered
 }
 
-/** Maximum allowed request body size (10 MiB). Prevents memory/CPU DoS. */
 const MAX_BODY_BYTES = 10 * 1024 * 1024
 
 const MESSAGES_PATH = '/v1/messages'
 
-// ── Factory ─────────────────────────────────────────────────────────────────
-
-/**
- * Creates the proxy's HTTP fetch handler.
- *
- * All external dependencies (session key, API key, upstream URL) are
- * captured in the closure so the returned function is self-contained.
- */
 export function createProxyHandler(
   deps: ProxyHandlerDeps,
 ): (req: Request) => Promise<Response> {
   const { sessionKey, apiKey, upstreamBaseUrl } = deps
-
-  // ── Helpers closed over deps ──────────────────────────────────────────
 
   function buildUpstreamUrl(clientUrl: URL): URL | null {
     const upstreamBase = new URL(upstreamBaseUrl)
@@ -108,8 +79,6 @@ export function createProxyHandler(
     filtered.set('x-api-key', apiKey)
     return filtered
   }
-
-  // ── Content helpers ───────────────────────────────────────────────────
 
   function extractContent(msg: unknown): string | unknown[] | undefined {
     if (typeof msg !== 'object' || msg === null) return undefined
@@ -148,8 +117,6 @@ export function createProxyHandler(
       return item
     })
   }
-
-  // ── Obfuscation ───────────────────────────────────────────────────────
 
   interface ObfuscateResult {
     readonly messages: unknown[]
@@ -198,8 +165,6 @@ export function createProxyHandler(
     return ok({ messages: obfuscated, mapping, stats })
   }
 
-  // ── Upstream forwarding ───────────────────────────────────────────────
-
   async function forwardRequest(
     originalReq: Request,
     body: string,
@@ -217,8 +182,6 @@ export function createProxyHandler(
       redirect: 'manual',
     })
   }
-
-  // ── Streaming ─────────────────────────────────────────────────────────
 
   function handleStreamingResponse(
     upstreamResponse: Response,
@@ -284,8 +247,6 @@ export function createProxyHandler(
       headers: filterResponseHeaders(upstreamResponse.headers),
     })
   }
-
-  // ── Messages endpoint ─────────────────────────────────────────────────
 
   async function handleMessagesEndpoint(req: Request): Promise<Response> {
     const requestId = crypto.randomUUID()
@@ -380,8 +341,6 @@ export function createProxyHandler(
     })
   }
 
-  // ── Main fetch handler ────────────────────────────────────────────────
-
   return async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url)
 
@@ -394,7 +353,6 @@ export function createProxyHandler(
       }
     }
 
-    // Transparent passthrough for all other routes
     const upstreamUrl = buildUpstreamUrl(url)
     if (upstreamUrl === null) {
       logger.error('Passthrough URL origin mismatch')

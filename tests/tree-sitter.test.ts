@@ -1,19 +1,9 @@
-/**
- * Unit tests for AST-based identifier extraction (web-tree-sitter).
- *
- * Tree-sitter is initialised via tests/setup.ts preload.
- * Tests verify both the positive extraction cases and — crucially — that
- * string literal contents and comment text are NOT extracted.
- */
-
 import { describe, it, expect } from 'bun:test'
 import {
   resolveLanguage,
   isTreeSitterReady,
   extractIdentifiersAST,
 } from '../src/ast/tree-sitter.ts'
-
-// ── resolveLanguage ───────────────────────────────────────────────────────────
 
 describe('resolveLanguage', () => {
   it('maps "typescript" → typescript', () => {
@@ -54,15 +44,11 @@ describe('resolveLanguage', () => {
   })
 })
 
-// ── isTreeSitterReady ─────────────────────────────────────────────────────────
-
 describe('isTreeSitterReady', () => {
   it('returns true after initTreeSitter() runs via setup preload', () => {
     expect(isTreeSitterReady()).toBe(true)
   })
 })
-
-// ── extractIdentifiersAST — positive extraction ───────────────────────────────
 
 describe('extractIdentifiersAST — extracts identifiers', () => {
   it('extracts class names from TypeScript', () => {
@@ -117,8 +103,6 @@ describe('extractIdentifiersAST — extracts identifiers', () => {
   })
 })
 
-// ── extractIdentifiersAST — negative cases (the key improvement over regex) ───
-
 describe('extractIdentifiersAST — does NOT extract non-identifiers', () => {
   it('does NOT extract keywords', () => {
     const code = 'class InvoiceProcessor extends Base { return const function }'
@@ -135,7 +119,6 @@ describe('extractIdentifiersAST — does NOT extract non-identifiers', () => {
     const code = 'const gateway = "PaymentGateway"'
     const ids = extractIdentifiersAST(code, 'typescript')
 
-    // This is the key improvement: regex WOULD extract "PaymentGateway"
     expect(ids?.has('PaymentGateway')).toBe(false)
   })
 
@@ -169,8 +152,6 @@ describe('extractIdentifiersAST — does NOT extract non-identifiers', () => {
   })
 })
 
-// ── extractIdentifiersAST — language handling ─────────────────────────────────
-
 describe('extractIdentifiersAST — language handling', () => {
   it('returns null for unsupported language tag', () => {
     const code = 'def calculate_total(items):'
@@ -195,7 +176,6 @@ describe('extractIdentifiersAST — language handling', () => {
     const code = 'const InvoiceProcessor = new Map()'
     const ids = extractIdentifiersAST(code, 'typescript')
 
-    // 'Map' is in the builtins skip-list
     expect(ids?.has('Map')).toBe(false)
     expect(ids?.has('InvoiceProcessor')).toBe(true)
   })

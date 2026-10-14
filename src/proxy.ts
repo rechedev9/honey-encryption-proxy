@@ -1,25 +1,9 @@
-/**
- * Honey Encryption Proxy for Claude Code — entry point.
- *
- * This file is a thin shell: load config → derive keys → start server.
- * All request-handling logic lives in proxy-handler.ts so integration
- * tests can construct a handler without triggering these side effects.
- *
- * Run with:
- *   ANTHROPIC_API_KEY=sk-ant-... HONEY_PASSPHRASE=secret bun run src/proxy.ts
- *
- * Then configure Claude Code:
- *   export ANTHROPIC_BASE_URL=http://localhost:8080
- */
-
 import { loadConfig } from './config.ts'
 import { deriveSessionKey, zeroSessionKey } from './honey/key-manager.ts'
 import { logger, setLogLevel } from './logger.ts'
 import { initAuditSigner } from './audit.ts'
 import { initTreeSitter } from './ast/tree-sitter.ts'
 import { createProxyHandler } from './proxy-handler.ts'
-
-// ── Config ──────────────────────────────────────────────────────────────────
 
 const configResult = loadConfig()
 if (!configResult.ok) {
@@ -30,11 +14,6 @@ if (!configResult.ok) {
 const config = configResult.value
 setLogLevel(config.logLevel)
 
-// Derive a persistent session key from the passphrase.
-// A fresh salt is generated each time the proxy starts; re-derivation
-// across restarts is intentionally not supported (forward secrecy).
-// If HONEY_KYBER_CAPSULE is set, the ML-KEM shared secret is XOR'd into
-// the master key for a classical + post-quantum hybrid derivation.
 const kyberCapsule = config.honeyKyberCapsule !== undefined
   ? Buffer.from(config.honeyKyberCapsule, 'base64url')
   : undefined
@@ -46,10 +25,8 @@ if (!keyResult.ok) {
 
 const SESSION_KEY = keyResult.value
 
-// Initialise SPHINCS+ audit signer using the session MAC key.
 initAuditSigner(SESSION_KEY.macKey)
 
-// Initialise tree-sitter AST extraction (non-fatal — falls back to regex on failure).
 void initTreeSitter()
 
 // Scrub secrets from process.env immediately after use.
@@ -67,8 +44,6 @@ logger.info('ML-KEM-768 public key (quantum-safe hybrid)', {
   mlkemPublicKey: SESSION_KEY.toJSON().mlkemPublicKey,
 })
 
-// ── Bun HTTP server ─────────────────────────────────────────────────────────
-
 const handler = createProxyHandler({
   sessionKey: SESSION_KEY,
   apiKey: config.anthropicApiKey,
@@ -80,8 +55,6 @@ const server = Bun.serve({
   hostname: '127.0.0.1',
   fetch: handler,
 })
-
-// ── Graceful shutdown ───────────────────────────────────────────────────────
 
 function handleShutdown(signal: string): void {
   logger.info('Shutdown initiated', { signal })
