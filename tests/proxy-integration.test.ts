@@ -1,13 +1,3 @@
-/**
- * Integration tests for the proxy HTTP handler.
- *
- * These tests start a real Bun proxy server (via createProxyHandler)
- * and a stub Anthropic upstream on OS-assigned ports. Every request
- * travels over real HTTP — no mocking of fetch or Request/Response.
- *
- * For unit tests of the obfuscation pipeline (mapper-level), see proxy.test.ts.
- */
-
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test'
 import { startStubServer } from './helpers/stub-anthropic-server.ts'
 import { startTestProxy } from './helpers/test-proxy-server.ts'
@@ -33,8 +23,6 @@ describe('Proxy integration', () => {
     stub.reset()
   })
 
-  // ── Helpers ─────────────────────────────────────────────────────────────
-
   function postMessages(body: unknown): Promise<Response> {
     return fetch(`${proxy.url}/v1/messages`, {
       method: 'POST',
@@ -42,8 +30,6 @@ describe('Proxy integration', () => {
       body: JSON.stringify(body),
     })
   }
-
-  // ── POST /v1/messages — buffered ───────────────────────────────────────
 
   describe('POST /v1/messages — buffered', () => {
     it('obfuscates identifiers before forwarding to upstream', async () => {
@@ -57,20 +43,14 @@ describe('Proxy integration', () => {
     })
 
     it('deobfuscates identifiers in the upstream response', async () => {
-      // The stub response echoes a fake name. We need to discover
-      // what fake name the proxy assigned, so we check the forwarded
-      // request body to find the replacement for PaymentGateway.
       stub.setResponse({ body: makeAnthropicResponse('Looks good.') })
       const res1 = await postMessages(makeMessagesBody())
-      await res1.text() // consume
+      await res1.text()
 
-      // The stub captured the forwarded body with fake identifiers.
-      // Now set the next response to echo those fakes back.
       const forwarded = stub.lastRequestBody() as Record<string, unknown>
       const fwdMessages = (forwarded as { messages: Array<{ content: string }> }).messages
       const fakeCode = fwdMessages[0]?.content ?? ''
 
-      // Extract a fake identifier from the forwarded code
       const fakeMatch = /class\s+(\w+)/.exec(fakeCode)
       const fakeName = fakeMatch?.[1] ?? 'Unknown'
 
@@ -83,7 +63,6 @@ describe('Proxy integration', () => {
       const parsed = JSON.parse(text) as { content: Array<{ text: string }> }
       const responseText = parsed.content[0]?.text ?? ''
 
-      // The response should contain the real name, not the fake one
       expect(responseText).toContain('PaymentGateway')
     })
 
@@ -92,7 +71,6 @@ describe('Proxy integration', () => {
       await postMessages(makeMessagesBody())
 
       const forwarded = JSON.stringify(stub.lastRequestBody())
-      // Structural elements must survive obfuscation
       expect(forwarded).toContain('class')
       expect(forwarded).toContain('number')
       expect(forwarded).toContain('boolean')
@@ -160,8 +138,6 @@ describe('Proxy integration', () => {
       await postMessages(body)
 
       const forwarded = JSON.stringify(stub.lastRequestBody())
-      // Non-trivial numbers should be obfuscated (0.21 and 3600 are neither
-      // trivial 0-256 nor HTTP status codes nor years)
       expect(forwarded).not.toContain('0.21')
       expect(forwarded).not.toContain('3600')
     })
@@ -256,8 +232,6 @@ describe('Proxy integration', () => {
     })
   })
 
-  // ── Multi-turn ────────────────────────────────────────────────────────
-
   describe('POST /v1/messages — multi-turn', () => {
     it('builds global mapping across user and assistant messages', async () => {
       stub.setResponse({ body: makeAnthropicResponse('OK') })
@@ -281,7 +255,6 @@ describe('Proxy integration', () => {
       await postMessages(body)
 
       const forwarded = JSON.stringify(stub.lastRequestBody())
-      // Real names should be obfuscated in ALL messages (user + assistant)
       expect(forwarded).not.toContain('AccountManager')
       expect(forwarded).not.toContain('getBalance')
     })
@@ -307,12 +280,10 @@ describe('Proxy integration', () => {
         messages: Array<{ content: string; role: string }>
       }
 
-      // Extract the fake class name from the user message code block
       const userContent = forwarded.messages[0]?.content ?? ''
       const classMatch = /class\s+(\w+)/.exec(userContent)
       const fakeClassName = classMatch?.[1] ?? ''
 
-      // The same fake name should appear in the assistant turn
       const assistantContent = forwarded.messages[1]?.content ?? ''
       expect(assistantContent).toContain(fakeClassName)
     })
@@ -334,8 +305,6 @@ describe('Proxy integration', () => {
       expect(forwarded).not.toContain('ReportBuilder')
     })
   })
-
-  // ── Passthrough routes ────────────────────────────────────────────────
 
   describe('Passthrough routes', () => {
     it('GET /v1/models is forwarded transparently to upstream', async () => {
@@ -362,24 +331,19 @@ describe('Proxy integration', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(sentBody),
       })
-      await res.text() // consume
+      await res.text()
 
-      // Verify the request reached the stub (was forwarded by the proxy)
       expect(stub.requestCount()).toBe(countBefore + 1)
 
-      // Passthrough should NOT obfuscate — body is forwarded as-is
       const forwarded = JSON.stringify(stub.lastRequestBody())
       expect(forwarded).toContain('SecretName')
     })
 
     it('GET does not have body limit enforcement', async () => {
-      // GET requests should pass through without body size checks
       const res = await fetch(`${proxy.url}/v1/models`, { method: 'GET' })
       expect(res.status).toBe(200)
     })
   })
-
-  // ── Request isolation ─────────────────────────────────────────────────
 
   describe('Request isolation', () => {
     it('concurrent requests do not share mapping state', async () => {
@@ -392,7 +356,6 @@ describe('Proxy integration', () => {
         messages: [{ role: 'user', content: '```typescript\nclass BetaService {}\n```' }],
       })
 
-      // Fire concurrently
       const [res1, res2] = await Promise.all([
         postMessages(body1),
         postMessages(body2),
@@ -420,13 +383,10 @@ describe('Proxy integration', () => {
       await postMessages(body2)
       const forwarded2 = JSON.stringify(stub.lastRequestBody())
 
-      // Neither should contain the original names
       expect(forwarded1).not.toContain('GammaProcessor')
       expect(forwarded2).not.toContain('DeltaProcessor')
     })
   })
-
-  // ── Error handling ────────────────────────────────────────────────────
 
   describe('Error handling', () => {
     it('returns 200 even when upstream returns error JSON', async () => {
@@ -436,7 +396,6 @@ describe('Proxy integration', () => {
       })
 
       const res = await postMessages(makeMessagesBody())
-      // The proxy forwards the upstream status
       expect(res.status).toBe(500)
     })
   })
