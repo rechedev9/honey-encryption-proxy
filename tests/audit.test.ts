@@ -1,7 +1,3 @@
-/**
- * Tests for the audit logger.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import { randomBytes } from 'node:crypto'
 import { writeAuditEntry, getAuditFilePath, resetAuditState, initAuditSigner } from '../src/audit.ts'
@@ -71,11 +67,9 @@ describe('Audit logger', () => {
     // The directory should already exist from ~/.honey-proxy, but
     // resetAuditState ensures the "dirReady" flag is false so it re-checks
     if (!existsSync(auditDir)) {
-      // If by some chance it doesn't exist, the write should create it
       await writeAuditEntry(makeEntry())
       expect(existsSync(auditDir)).toBe(true)
     } else {
-      // Directory already exists; just verify write succeeds
       await writeAuditEntry(makeEntry())
       expect(existsSync(auditFile)).toBe(true)
     }
@@ -90,7 +84,6 @@ describe('Audit logger', () => {
 
   describe('SPHINCS+ audit signatures (SLH-DSA-SHA2-128s)', () => {
     it('entry has no signature fields when signer is not initialised', async () => {
-      // resetAuditState() already called in beforeEach — signer is null
       await writeAuditEntry(makeEntry())
 
       const content = readFileSync(auditFile, 'utf-8').trim()
@@ -123,7 +116,6 @@ describe('Audit logger', () => {
       const macKey = randomBytes(32)
       initAuditSigner(macKey)
 
-      // Create two entries with identical values but different property insertion order
       const entry1: AuditEntry = {
         timestamp: '2026-01-01T00:00:00.000Z',
         requestId: 'req-canon-1',
@@ -135,7 +127,6 @@ describe('Audit logger', () => {
         upstreamStatus: 200,
       }
 
-      // Same values, different property order
       const entry2: AuditEntry = {
         upstreamStatus: 200,
         streaming: false,

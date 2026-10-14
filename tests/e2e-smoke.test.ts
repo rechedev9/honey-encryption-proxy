@@ -1,21 +1,9 @@
-/**
- * True black-box E2E smoke tests.
- *
- * Each test spawns proxy.ts as a subprocess with controlled env vars.
- * The proxy connects to a stub Anthropic server (started in beforeAll).
- * These tests verify the full lifecycle: startup, HTTP round-trip,
- * passthrough, shutdown, and audit trail creation.
- *
- * These are intentionally slow (~5s each for scrypt + SPHINCS+ keygen)
- * and few in number.
- */
-
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test'
 import { startStubServer } from './helpers/stub-anthropic-server.ts'
 import type { StubAnthropicServer } from './helpers/stub-anthropic-server.ts'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import { mkdtempSync } from 'node:fs'
+import { tmpdir, userInfo } from 'node:os'
+import { mkdtempSync, rmSync } from 'node:fs'
 import type { Subprocess } from 'bun'
 
 // E2E tests are slow due to scrypt + SPHINCS+ keygen per spawn.
@@ -28,12 +16,12 @@ describe('E2E smoke tests', () => {
 
   beforeAll(() => {
     stub = startStubServer()
-    // Isolated HOME so audit files don't touch the real user home
-    tempHome = mkdtempSync(join(tmpdir(), 'honey-e2e-'))
+    tempHome = mkdtempSync(join(userInfo().homedir, '.honey-e2e-'))
   })
 
   afterAll(async () => {
     await stub.stop()
+    rmSync(tempHome, { recursive: true, force: true })
   })
 
   afterEach(async () => {
@@ -44,8 +32,6 @@ describe('E2E smoke tests', () => {
     }
   })
 
-  // ── Helpers ─────────────────────────────────────────────────────────────
-
   interface ProxyInstance {
     readonly proc: Subprocess
     readonly port: number
@@ -53,10 +39,6 @@ describe('E2E smoke tests', () => {
     readonly logs: string[]
   }
 
-  /**
-   * Spawns proxy.ts and waits for the "Honey proxy ready" log line.
-   * Returns the discovered port and accumulated log lines.
-   */
   async function spawnProxy(options?: {
     readonly passphrase?: string
     readonly apiKey?: string
@@ -68,7 +50,7 @@ describe('E2E smoke tests', () => {
       ...process.env,
       ANTHROPIC_API_KEY: options?.apiKey ?? 'sk-ant-e2e-test-key',
       HONEY_PASSPHRASE: options?.passphrase ?? 'e2e-smoke-test-passphrase',
-      PROXY_PORT: '0', // OS-assigned
+      PROXY_PORT: '0',
       LOG_LEVEL: 'info',
       HOME: tempHome,
       USERPROFILE: tempHome,
@@ -90,7 +72,6 @@ describe('E2E smoke tests', () => {
     const logs: string[] = []
     let port = 0
 
-    // Read stdout line by line looking for the "ready" log
     const reader = proc.stdout.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -134,14 +115,11 @@ describe('E2E smoke tests', () => {
     throw new Error(`Proxy exited before becoming ready. Logs:\n${logs.join('\n')}`)
   }
 
-  // ── Tests ──────────────────────────────────────────────────────────────
-
   it('proxy starts and logs ready message', async () => {
     const instance = await spawnProxy()
 
     expect(instance.port).toBeGreaterThan(0)
 
-    // Should have logged startup messages
     const readyLog = instance.logs.find((l) => l.includes('Honey proxy ready'))
     expect(readyLog).toBeDefined()
   }, E2E_TIMEOUT)
@@ -152,7 +130,6 @@ describe('E2E smoke tests', () => {
     const mlkemLog = instance.logs.find((l) => l.includes('ML-KEM-768'))
     expect(mlkemLog).toBeDefined()
 
-    // The log should contain a base64url-encoded public key
     if (mlkemLog !== undefined) {
       const parsed = JSON.parse(mlkemLog) as Record<string, unknown>
       expect(typeof parsed.mlkemPublicKey).toBe('string')
@@ -163,10 +140,9 @@ describe('E2E smoke tests', () => {
   it('proxy shuts down cleanly on SIGTERM', async () => {
     const instance = await spawnProxy()
 
-    // Send SIGTERM
     instance.proc.kill('SIGTERM')
     const exitCode = await instance.proc.exited
-    proxyProc = null // already exited
+    proxyProc = null
 
     // Bun processes should exit with code 0 on graceful shutdown
     // (or 143 = 128+15 on some systems for SIGTERM)
@@ -185,7 +161,6 @@ describe('E2E smoke tests', () => {
     // happens when a request is processed)
     expect(instance.port).toBeGreaterThan(0)
 
-    // Clean up
     instance.proc.kill('SIGTERM')
     await instance.proc.exited
     proxyProc = null
@@ -197,7 +172,7 @@ describe('E2E smoke tests', () => {
       env: {
         ...process.env,
         ANTHROPIC_API_KEY: 'sk-ant-test',
-        HONEY_PASSPHRASE: '', // empty = treated as missing
+        HONEY_PASSPHRASE: '',
         HOME: tempHome,
         USERPROFILE: tempHome,
       },
@@ -207,8 +182,28 @@ describe('E2E smoke tests', () => {
 
     const exitCode = await proc.exited
 
-    // Should exit with non-zero code due to missing passphrase
     expect(exitCode).not.toBe(0)
     proxyProc = null
+  }, E2E_TIMEOUT)
+
+  it('proxy rejects a HOME directory outside the account home', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'honey-e2e-outside-'))
+    const proc = Bun.spawn(['bun', 'run', 'src/proxy.ts'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: 'sk-ant-test',
+        HONEY_PASSPHRASE: 'e2e-smoke-test-passphrase',
+        HOME: outside,
+        USERPROFILE: outside,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    proxyProc = proc
+    const exitCode = await proc.exited
+    proxyProc = null
+    rmSync(outside, { recursive: true, force: true })
+    expect(exitCode).not.toBe(0)
   }, E2E_TIMEOUT)
 })
